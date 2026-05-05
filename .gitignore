@@ -1,0 +1,44 @@
+# Maven
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+*.classpath
+*.project
+*.settings/
+
+# Spring Boot
+*.log
+logs/
+
+# Variables de entorno y configuración sensible
+.env
+.env.local
+.env.*.local
+application-local.properties
+application-prod.properties
+application-secret.properties
+
+# Archivos SQL con datos sensibles o volcados de producción
+*.sql
+*.sql.gz
+*.dump
+*.bak
+database/
+db-backups/
+!src/main/resources/db/migration/*.sql
+
+# OS
+.DS_Store
+Thumbs.db
+
+# JVM crash logs
+hs_err_pid*
+replay_pid*
