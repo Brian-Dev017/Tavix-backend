@@ -22,18 +22,18 @@ logs/
 .env
 .env.local
 .env.*.local
+src/main/resources/application.properties
 application-local.properties
 application-prod.properties
 application-secret.properties
 
-# Archivos SQL con datos sensibles o volcados de producción
+# Archivos SQL
 *.sql
 *.sql.gz
 *.dump
 *.bak
 database/
 db-backups/
-!src/main/resources/db/migration/*.sql
 
 # OS
 .DS_Store
