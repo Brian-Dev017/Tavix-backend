@@ -63,6 +63,9 @@ public class AuthService implements AuthUseCase, RefreshTokenUseCase {
 
     @Override
     public String refresh(String refreshToken) {
+        if (refreshToken == null || refreshToken.isBlank()) {
+            throw new BusinessException("Refresh token no enviado", HttpStatus.UNAUTHORIZED);
+        }
         if (!refreshTokenRepo.isTokenValido(refreshToken)) {
             throw new BusinessException("Refresh token inválido o expirado", HttpStatus.UNAUTHORIZED);
         }
@@ -70,6 +73,10 @@ public class AuthService implements AuthUseCase, RefreshTokenUseCase {
                 .orElseThrow(() -> new BusinessException("Token no encontrado", HttpStatus.UNAUTHORIZED));
         Usuario usuario = usuarioRepo.findById(usuarioId)
                 .orElseThrow(() -> new BusinessException("Usuario no encontrado", HttpStatus.UNAUTHORIZED));
+        if (!usuario.isActivo()) {
+            refreshTokenRepo.revokar(refreshToken);
+            throw new BusinessException("Usuario inactivo", HttpStatus.UNAUTHORIZED);
+        }
         return jwtProvider.generateAccessToken(usuario);
     }
 

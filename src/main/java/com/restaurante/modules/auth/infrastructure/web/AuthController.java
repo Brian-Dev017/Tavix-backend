@@ -4,14 +4,18 @@ import com.restaurante.modules.auth.domain.port.in.AuthUseCase;
 import com.restaurante.modules.auth.domain.port.in.RefreshTokenUseCase;
 import com.restaurante.modules.auth.infrastructure.web.dto.LoginRequest;
 import com.restaurante.modules.auth.infrastructure.web.dto.LoginResponse;
+import com.restaurante.shared.exception.BusinessException;
 import com.restaurante.shared.response.ApiResponse;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Duration;
 import java.util.Arrays;
 
 @RestController
@@ -33,11 +37,7 @@ public class AuthController {
 
         LoginResponse loginResponse = authUseCase.login(request);
 
-        Cookie cookie = new Cookie("refreshToken", loginResponse.refreshToken());
-        cookie.setHttpOnly(true);
-        cookie.setPath("/api/auth/refresh");
-        cookie.setMaxAge(7 * 24 * 60 * 60);
-        response.addCookie(cookie);
+        writeRefreshTokenCookie(response, loginResponse.refreshToken(), Duration.ofDays(7));
 
         LoginResponse safeResponse = new LoginResponse(
                 loginResponse.accessToken(), null,
@@ -49,6 +49,9 @@ public class AuthController {
     @PostMapping("/refresh")
     public ResponseEntity<ApiResponse<String>> refresh(HttpServletRequest request) {
         String refreshToken = extractRefreshCookie(request);
+        if (refreshToken == null || refreshToken.isBlank()) {
+            throw new BusinessException("Refresh token no enviado", HttpStatus.UNAUTHORIZED);
+        }
         String newAccessToken = refreshTokenUseCase.refresh(refreshToken);
         return ResponseEntity.ok(ApiResponse.ok(newAccessToken));
     }
@@ -60,10 +63,7 @@ public class AuthController {
         if (refreshToken != null) {
             refreshTokenUseCase.logout(refreshToken);
         }
-        Cookie cookie = new Cookie("refreshToken", "");
-        cookie.setMaxAge(0);
-        cookie.setPath("/api/auth/refresh");
-        response.addCookie(cookie);
+        clearRefreshTokenCookie(response);
         return ResponseEntity.ok(ApiResponse.ok("Sesión cerrada", null));
     }
 
@@ -74,5 +74,27 @@ public class AuthController {
                 .map(Cookie::getValue)
                 .findFirst()
                 .orElse(null);
+    }
+
+    private void writeRefreshTokenCookie(HttpServletResponse response,
+                                         String refreshToken,
+                                         Duration maxAge) {
+        ResponseCookie cookie = ResponseCookie.from("refreshToken", refreshToken)
+                .httpOnly(true)
+                .path("/api/auth")
+                .sameSite("Lax")
+                .maxAge(maxAge)
+                .build();
+        response.addHeader("Set-Cookie", cookie.toString());
+    }
+
+    private void clearRefreshTokenCookie(HttpServletResponse response) {
+        ResponseCookie cookie = ResponseCookie.from("refreshToken", "")
+                .httpOnly(true)
+                .path("/api/auth")
+                .sameSite("Lax")
+                .maxAge(Duration.ZERO)
+                .build();
+        response.addHeader("Set-Cookie", cookie.toString());
     }
 }

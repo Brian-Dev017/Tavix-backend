@@ -1,6 +1,7 @@
 package com.restaurante.modules.admin.infrastructure.web;
 
 import com.restaurante.modules.admin.infrastructure.web.dto.*;
+import com.restaurante.modules.auth.domain.port.out.RefreshTokenRepositoryPort;
 import com.restaurante.modules.auth.infrastructure.persistence.UsuarioEntity;
 import com.restaurante.modules.auth.infrastructure.persistence.UsuarioJpaRepo;
 import com.restaurante.modules.catalogo.infrastructure.persistence.CategoriaJpaRepo;
@@ -28,15 +29,18 @@ public class AdminController {
     private final ProductoJpaRepo productoRepo;
     private final CategoriaJpaRepo categoriaRepo;
     private final MesaJpaRepo mesaRepo;
+    private final RefreshTokenRepositoryPort refreshTokenRepo;
     private final PasswordEncoder passwordEncoder;
 
     public AdminController(UsuarioJpaRepo usuarioRepo, ProductoJpaRepo productoRepo,
                            CategoriaJpaRepo categoriaRepo, MesaJpaRepo mesaRepo,
+                           RefreshTokenRepositoryPort refreshTokenRepo,
                            PasswordEncoder passwordEncoder) {
         this.usuarioRepo = usuarioRepo;
         this.productoRepo = productoRepo;
         this.categoriaRepo = categoriaRepo;
         this.mesaRepo = mesaRepo;
+        this.refreshTokenRepo = refreshTokenRepo;
         this.passwordEncoder = passwordEncoder;
     }
 
@@ -99,6 +103,9 @@ public class AdminController {
         if (req.rolId() != null) u.setRolId(req.rolId());
         if (req.activo() != null) u.setActivo(req.activo());
         UsuarioEntity saved = usuarioRepo.save(u);
+        if (Boolean.FALSE.equals(req.activo())) {
+            refreshTokenRepo.revokarPorUsuario(id);
+        }
         return ResponseEntity.ok(ApiResponse.ok(new UsuarioAdminDTO(
                 saved.getId(), saved.getNombre(), saved.getApellido(),
                 saved.getUsuario(), saved.getRolId(), saved.isActivo())));
@@ -111,6 +118,7 @@ public class AdminController {
                 .orElseThrow(() -> new BusinessException("Usuario no encontrado", HttpStatus.NOT_FOUND));
         u.setContrasenaHash(passwordEncoder.encode(req.nuevaContrasena()));
         usuarioRepo.save(u);
+        refreshTokenRepo.revokarPorUsuario(id);
         return ResponseEntity.ok(ApiResponse.ok(null));
     }
 
@@ -125,6 +133,7 @@ public class AdminController {
                 .orElseThrow(() -> new BusinessException("Usuario no encontrado", HttpStatus.NOT_FOUND));
         u.setActivo(false);
         usuarioRepo.save(u);
+        refreshTokenRepo.revokarPorUsuario(id);
         return ResponseEntity.ok(ApiResponse.ok(null));
     }
 
