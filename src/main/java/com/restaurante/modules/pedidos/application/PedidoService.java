@@ -7,11 +7,11 @@ import com.restaurante.modules.pedidos.infrastructure.persistence.DetallePedidoE
 import com.restaurante.modules.pedidos.infrastructure.persistence.DetallePedidoJpaRepo;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoEntity;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoJpaRepo;
-import com.restaurante.modules.pedidos.infrastructure.ws.PedidoEventPublisher;
 import com.restaurante.modules.pedidos.infrastructure.web.dto.AgregarItemRequest;
 import com.restaurante.modules.pedidos.infrastructure.web.dto.CrearPedidoRequest;
 import com.restaurante.modules.pedidos.infrastructure.web.dto.ItemCocinaDTO;
 import com.restaurante.modules.pedidos.infrastructure.web.dto.ItemPedidoDTO;
+import com.restaurante.modules.pedidos.infrastructure.ws.PedidoEventPublisher;
 import com.restaurante.shared.exception.BusinessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -43,10 +43,12 @@ public class PedidoService {
 
     @Transactional
     public Long crearPedido(CrearPedidoRequest request) {
-        sesionRepo.findById(request.sesionMesaId())
-                .orElseThrow(() -> new BusinessException("Sesión de mesa no encontrada", HttpStatus.NOT_FOUND));
+        var sesion = sesionRepo.findById(request.sesionMesaId())
+                .orElseThrow(() -> new BusinessException("Sesion de mesa no encontrada", HttpStatus.NOT_FOUND));
+        if (sesion.getCerradaEn() != null) {
+            throw new BusinessException("La sesion de mesa esta cerrada", HttpStatus.CONFLICT);
+        }
 
-        // Retorna pedido activo existente para esta sesión, o crea uno nuevo
         return pedidoRepo
                 .findTopBySesionMesaIdAndEstadoNotOrderByCreadoEnAsc(
                         request.sesionMesaId(), PedidoEntity.EstadoPedido.CANCELADO)
@@ -66,11 +68,15 @@ public class PedidoService {
 
         if (pedido.getEstado() == PedidoEntity.EstadoPedido.COBRADO
                 || pedido.getEstado() == PedidoEntity.EstadoPedido.CANCELADO) {
-            throw new BusinessException("No se puede agregar ítems a un pedido " + pedido.getEstado());
+            throw new BusinessException("No se puede agregar items a un pedido " + pedido.getEstado(),
+                    HttpStatus.CONFLICT);
         }
 
         var producto = productoRepo.findById(request.productoId())
                 .orElseThrow(() -> new BusinessException("Producto no encontrado", HttpStatus.NOT_FOUND));
+        if (!producto.isDisponible()) {
+            throw new BusinessException("Producto no disponible", HttpStatus.CONFLICT);
+        }
 
         DetallePedidoEntity detalle = new DetallePedidoEntity();
         detalle.setPedidoId(pedidoId);
@@ -79,6 +85,11 @@ public class PedidoService {
         detalle.setPrecioUnitario(producto.getPrecio());
         detalle.setObservaciones(request.observaciones());
         DetallePedidoEntity saved = detalleRepo.save(detalle);
+
+        if (pedido.getEstado() == PedidoEntity.EstadoPedido.ABIERTO) {
+            pedido.setEstado(PedidoEntity.EstadoPedido.EN_COCINA);
+            pedidoRepo.save(pedido);
+        }
 
         String numeroMesa = sesionRepo.findById(pedido.getSesionMesaId())
                 .flatMap(s -> mesaRepo.findById(s.getMesaId()))

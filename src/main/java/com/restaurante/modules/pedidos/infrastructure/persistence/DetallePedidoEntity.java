@@ -29,6 +29,12 @@ public class DetallePedidoEntity {
     @Column(columnDefinition = "TEXT")
     private String observaciones;
 
+    @Column(name = "motivo_cancelacion")
+    private String motivoCancelacion;
+
+    @Column(name = "cancelado_en")
+    private LocalDateTime canceladoEn;
+
     @Column(name = "creado_en")
     private LocalDateTime creadoEn = LocalDateTime.now();
 
@@ -41,6 +47,8 @@ public class DetallePedidoEntity {
     public BigDecimal getPrecioUnitario() { return precioUnitario; }
     public EstadoDetalle getEstado() { return estado; }
     public String getObservaciones() { return observaciones; }
+    public String getMotivoCancelacion() { return motivoCancelacion; }
+    public LocalDateTime getCanceladoEn() { return canceladoEn; }
     public LocalDateTime getCreadoEn() { return creadoEn; }
 
     public void setPedidoId(Long pedidoId) { this.pedidoId = pedidoId; }
@@ -49,4 +57,6 @@ public class DetallePedidoEntity {
     public void setPrecioUnitario(BigDecimal precioUnitario) { this.precioUnitario = precioUnitario; }
     public void setObservaciones(String observaciones) { this.observaciones = observaciones; }
     public void setEstado(EstadoDetalle estado) { this.estado = estado; }
+    public void setMotivoCancelacion(String motivoCancelacion) { this.motivoCancelacion = motivoCancelacion; }
+    public void setCanceladoEn(LocalDateTime canceladoEn) { this.canceladoEn = canceladoEn; }
 }

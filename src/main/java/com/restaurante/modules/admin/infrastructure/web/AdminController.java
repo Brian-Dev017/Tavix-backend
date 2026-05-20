@@ -9,6 +9,9 @@ import com.restaurante.modules.catalogo.infrastructure.persistence.ProductoEntit
 import com.restaurante.modules.catalogo.infrastructure.persistence.ProductoJpaRepo;
 import com.restaurante.modules.mesas.infrastructure.persistence.MesaEntity;
 import com.restaurante.modules.mesas.infrastructure.persistence.MesaJpaRepo;
+import com.restaurante.modules.mesas.application.MesaService;
+import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoEntity;
+import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoJpaRepo;
 import com.restaurante.shared.exception.BusinessException;
 import com.restaurante.shared.response.ApiResponse;
 import org.springframework.http.HttpStatus;
@@ -20,6 +23,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.time.LocalDateTime;
 
 @RestController
 @RequestMapping("/api/admin")
@@ -29,17 +33,22 @@ public class AdminController {
     private final ProductoJpaRepo productoRepo;
     private final CategoriaJpaRepo categoriaRepo;
     private final MesaJpaRepo mesaRepo;
+    private final PedidoJpaRepo pedidoRepo;
+    private final MesaService mesaService;
     private final RefreshTokenRepositoryPort refreshTokenRepo;
     private final PasswordEncoder passwordEncoder;
 
     public AdminController(UsuarioJpaRepo usuarioRepo, ProductoJpaRepo productoRepo,
                            CategoriaJpaRepo categoriaRepo, MesaJpaRepo mesaRepo,
+                           PedidoJpaRepo pedidoRepo, MesaService mesaService,
                            RefreshTokenRepositoryPort refreshTokenRepo,
                            PasswordEncoder passwordEncoder) {
         this.usuarioRepo = usuarioRepo;
         this.productoRepo = productoRepo;
         this.categoriaRepo = categoriaRepo;
         this.mesaRepo = mesaRepo;
+        this.pedidoRepo = pedidoRepo;
+        this.mesaService = mesaService;
         this.refreshTokenRepo = refreshTokenRepo;
         this.passwordEncoder = passwordEncoder;
     }
@@ -56,6 +65,28 @@ public class AdminController {
     }
 
     private static final Set<String> ROLES_VALIDOS = Set.of("AD", "ME", "CO", "CA");
+
+    @PatchMapping("/pedidos/{id}/cancelar")
+    public ResponseEntity<ApiResponse<Void>> cancelarPedido(
+            @PathVariable Long id,
+            @RequestBody CancelarPedidoRequest request) {
+        if (request == null || request.motivo() == null || request.motivo().isBlank()) {
+            throw new BusinessException("El motivo de anulacion es obligatorio", HttpStatus.BAD_REQUEST);
+        }
+        PedidoEntity pedido = pedidoRepo.findById(id)
+                .orElseThrow(() -> new BusinessException("Pedido no encontrado", HttpStatus.NOT_FOUND));
+        if (pedido.getEstado() == PedidoEntity.EstadoPedido.COBRADO) {
+            throw new BusinessException("No se puede anular un pedido cobrado", HttpStatus.CONFLICT);
+        }
+        pedido.setEstado(PedidoEntity.EstadoPedido.CANCELADO);
+        pedido.setMotivoCancelacion(request.motivo().trim());
+        pedido.setCanceladoEn(LocalDateTime.now());
+        pedidoRepo.save(pedido);
+        if (pedido.getSesionMesaId() != null) {
+            mesaService.cerrarSesion(pedido.getSesionMesaId());
+        }
+        return ResponseEntity.ok(ApiResponse.ok("Pedido anulado", null));
+    }
 
     @PostMapping("/usuarios")
     public ResponseEntity<ApiResponse<UsuarioAdminDTO>> crearUsuario(@RequestBody CrearUsuarioRequest req) {

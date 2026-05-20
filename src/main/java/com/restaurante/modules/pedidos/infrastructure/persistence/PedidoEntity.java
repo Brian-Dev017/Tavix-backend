@@ -20,6 +20,12 @@ public class PedidoEntity {
     @Column(columnDefinition = "TEXT")
     private String observaciones;
 
+    @Column(name = "motivo_cancelacion")
+    private String motivoCancelacion;
+
+    @Column(name = "cancelado_en")
+    private LocalDateTime canceladoEn;
+
     @Column(name = "creado_en")
     private LocalDateTime creadoEn = LocalDateTime.now();
 
@@ -32,9 +38,13 @@ public class PedidoEntity {
     public Long getSesionMesaId() { return sesionMesaId; }
     public EstadoPedido getEstado() { return estado; }
     public String getObservaciones() { return observaciones; }
+    public String getMotivoCancelacion() { return motivoCancelacion; }
+    public LocalDateTime getCanceladoEn() { return canceladoEn; }
     public LocalDateTime getCreadoEn() { return creadoEn; }
 
     public void setSesionMesaId(Long sesionMesaId) { this.sesionMesaId = sesionMesaId; }
     public void setEstado(EstadoPedido estado) { this.estado = estado; }
     public void setObservaciones(String observaciones) { this.observaciones = observaciones; }
+    public void setMotivoCancelacion(String motivoCancelacion) { this.motivoCancelacion = motivoCancelacion; }
+    public void setCanceladoEn(LocalDateTime canceladoEn) { this.canceladoEn = canceladoEn; }
 }

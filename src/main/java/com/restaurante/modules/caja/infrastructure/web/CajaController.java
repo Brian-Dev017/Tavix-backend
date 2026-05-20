@@ -5,6 +5,8 @@ import com.restaurante.modules.caja.infrastructure.web.dto.ComprobanteResponseDT
 import com.restaurante.modules.caja.infrastructure.web.dto.EmitirComprobanteRequest;
 import com.restaurante.modules.caja.infrastructure.web.dto.PedidoResumenDTO;
 import com.restaurante.shared.response.ApiResponse;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -32,5 +34,14 @@ public class CajaController {
             Authentication auth) {
         Long cajeroId = Long.parseLong(auth.getName());
         return ResponseEntity.ok(ApiResponse.ok(cajaService.emitirComprobante(cajeroId, request)));
+    }
+
+    @GetMapping("/comprobante/{id}/escpos")
+    public ResponseEntity<byte[]> imprimirEscPos(@PathVariable Long id) {
+        byte[] payload = cajaService.generarEscPos(id);
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=comprobante-" + id + ".bin")
+                .body(payload);
     }
 }

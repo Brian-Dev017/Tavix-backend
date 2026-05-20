@@ -29,6 +29,7 @@ application-secret.properties
 
 # Archivos SQL
 *.sql
+!src/main/resources/db/migration/*.sql
 *.sql.gz
 *.dump
 *.bak

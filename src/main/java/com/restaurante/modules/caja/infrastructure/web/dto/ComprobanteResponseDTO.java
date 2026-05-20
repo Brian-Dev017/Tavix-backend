@@ -7,9 +7,12 @@ public record ComprobanteResponseDTO(
         Long id,
         Long pedidoId,
         String tipoComprobante,
+        String serie,
+        Integer numero,
         String metodoPago,
         BigDecimal subtotal,
         BigDecimal igv,
+        BigDecimal descuento,
         BigDecimal total,
         String estado,
         LocalDateTime pagadoEn

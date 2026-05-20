@@ -21,6 +21,11 @@ public class ComprobanteEntity {
     @Column(name = "tipo_comprobante_id", length = 1)
     private String tipoComprobanteId = "T";
 
+    @Column(length = 4)
+    private String serie;
+
+    private Integer numero;
+
     @Column(name = "datos_comprobante_id")
     private Long datosComprobanteId;
 
@@ -32,6 +37,12 @@ public class ComprobanteEntity {
 
     @Column(precision = 10, scale = 2)
     private BigDecimal total;
+
+    @Column(precision = 10, scale = 2)
+    private BigDecimal descuento = BigDecimal.ZERO;
+
+    @Column(name = "motivo_descuento")
+    private String motivoDescuento;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "metodo_pago", nullable = false)
@@ -56,10 +67,14 @@ public class ComprobanteEntity {
     public Long getPedidoId() { return pedidoId; }
     public Long getCajeroId() { return cajeroId; }
     public String getTipoComprobanteId() { return tipoComprobanteId; }
+    public String getSerie() { return serie; }
+    public Integer getNumero() { return numero; }
     public Long getDatosComprobanteId() { return datosComprobanteId; }
     public BigDecimal getSubtotal() { return subtotal; }
     public BigDecimal getIgv() { return igv; }
     public BigDecimal getTotal() { return total; }
+    public BigDecimal getDescuento() { return descuento; }
+    public String getMotivoDescuento() { return motivoDescuento; }
     public MetodoPago getMetodoPago() { return metodoPago; }
     public EstadoComprobante getEstado() { return estado; }
     public LocalDateTime getPagadoEn() { return pagadoEn; }
@@ -68,10 +83,14 @@ public class ComprobanteEntity {
     public void setPedidoId(Long pedidoId) { this.pedidoId = pedidoId; }
     public void setCajeroId(Long cajeroId) { this.cajeroId = cajeroId; }
     public void setTipoComprobanteId(String tipoComprobanteId) { this.tipoComprobanteId = tipoComprobanteId; }
+    public void setSerie(String serie) { this.serie = serie; }
+    public void setNumero(Integer numero) { this.numero = numero; }
     public void setDatosComprobanteId(Long datosComprobanteId) { this.datosComprobanteId = datosComprobanteId; }
     public void setSubtotal(BigDecimal subtotal) { this.subtotal = subtotal; }
     public void setIgv(BigDecimal igv) { this.igv = igv; }
     public void setTotal(BigDecimal total) { this.total = total; }
+    public void setDescuento(BigDecimal descuento) { this.descuento = descuento; }
+    public void setMotivoDescuento(String motivoDescuento) { this.motivoDescuento = motivoDescuento; }
     public void setMetodoPago(MetodoPago metodoPago) { this.metodoPago = metodoPago; }
     public void setEstado(EstadoComprobante estado) { this.estado = estado; }
     public void setPagadoEn(LocalDateTime pagadoEn) { this.pagadoEn = pagadoEn; }
