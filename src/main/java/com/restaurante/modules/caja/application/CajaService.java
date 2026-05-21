@@ -10,9 +10,11 @@ import com.restaurante.modules.caja.infrastructure.web.dto.EmitirComprobanteRequ
 import com.restaurante.modules.caja.infrastructure.web.dto.PedidoResumenDTO;
 import com.restaurante.modules.configuracion.infrastructure.persistence.SerieComprobanteEntity;
 import com.restaurante.modules.configuracion.infrastructure.persistence.SerieComprobanteJpaRepo;
-import com.restaurante.modules.mesas.application.MesaService;
+import com.restaurante.modules.catalogo.infrastructure.persistence.ProductoJpaRepo;
+import com.restaurante.modules.pedidos.infrastructure.persistence.DetallePedidoJpaRepo;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoEntity;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoJpaRepo;
+import com.restaurante.modules.pedidos.infrastructure.web.dto.ItemPedidoDTO;
 import com.restaurante.shared.exception.BusinessException;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
@@ -38,18 +40,21 @@ public class CajaService {
     private final DatosComprobanteJpaRepo datosRepo;
     private final PedidoJpaRepo pedidoRepo;
     private final SerieComprobanteJpaRepo serieRepo;
-    private final MesaService mesaService;
+    private final DetallePedidoJpaRepo detalleRepo;
+    private final ProductoJpaRepo productoRepo;
 
     public CajaService(ComprobanteJpaRepo comprobanteRepo,
                        DatosComprobanteJpaRepo datosRepo,
                        PedidoJpaRepo pedidoRepo,
                        SerieComprobanteJpaRepo serieRepo,
-                       MesaService mesaService) {
+                       DetallePedidoJpaRepo detalleRepo,
+                       ProductoJpaRepo productoRepo) {
         this.comprobanteRepo = comprobanteRepo;
         this.datosRepo = datosRepo;
         this.pedidoRepo = pedidoRepo;
         this.serieRepo = serieRepo;
-        this.mesaService = mesaService;
+        this.detalleRepo = detalleRepo;
+        this.productoRepo = productoRepo;
     }
 
     @SuppressWarnings("unchecked")
@@ -69,13 +74,18 @@ public class CajaService {
                 (BigDecimal) r[4],
                 (BigDecimal) r[5],
                 (BigDecimal) r[6],
-                (String) r[7]
+                (String) r[7],
+                cargarItems(((Number) r[0]).longValue())
         )).toList();
     }
 
     @Transactional
-    public ComprobanteResponseDTO emitirComprobante(Long cajeroId, EmitirComprobanteRequest request) {
+    public ComprobanteResponseDTO emitirComprobante(Long cajeroId, boolean puedeAplicarDescuento,
+                                                    EmitirComprobanteRequest request) {
         validarRequestBasico(request);
+        if (!puedeAplicarDescuento && tieneDescuento(request.descuento())) {
+            throw new BusinessException("Solo un administrador puede aplicar descuentos", HttpStatus.FORBIDDEN);
+        }
 
         if (comprobanteRepo.findByPedidoId(request.pedidoId()).isPresent()) {
             throw new BusinessException("Ya existe un comprobante para este pedido", HttpStatus.CONFLICT);
@@ -133,9 +143,6 @@ public class CajaService {
 
         pedido.setEstado(PedidoEntity.EstadoPedido.COBRADO);
         pedidoRepo.save(pedido);
-        if (pedido.getSesionMesaId() != null) {
-            mesaService.cerrarSesion(pedido.getSesionMesaId());
-        }
 
         return new ComprobanteResponseDTO(
                 saved.getId(), saved.getPedidoId(),
@@ -165,6 +172,23 @@ public class CajaService {
                 + "Gracias por su visita\n\n\n"
                 + "\u001DV\u0001";
         return ticket.getBytes(StandardCharsets.ISO_8859_1);
+    }
+
+    private List<ItemPedidoDTO> cargarItems(Long pedidoId) {
+        return detalleRepo.findByPedidoId(pedidoId).stream()
+                .map(d -> {
+                    String nombre = productoRepo.findById(d.getProductoId())
+                            .map(p -> p.getNombre())
+                            .orElse("Desconocido");
+                    BigDecimal subtotal = d.getPrecioUnitario()
+                            .multiply(BigDecimal.valueOf(d.getCantidad()));
+                    return new ItemPedidoDTO(
+                            d.getId(), d.getPedidoId(), d.getProductoId(),
+                            nombre, d.getCantidad(), d.getPrecioUnitario(),
+                            subtotal, d.getEstado().name(), d.getObservaciones(), d.getCreadoEn()
+                    );
+                })
+                .toList();
     }
 
     private void validarRequestBasico(EmitirComprobanteRequest request) {
@@ -242,6 +266,10 @@ public class CajaService {
             throw new BusinessException("El motivo de descuento es obligatorio", HttpStatus.BAD_REQUEST);
         }
         return value;
+    }
+
+    private boolean tieneDescuento(BigDecimal descuento) {
+        return descuento != null && descuento.signum() > 0;
     }
 
     private boolean soloDigitos(String value, int length) {

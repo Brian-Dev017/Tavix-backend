@@ -33,7 +33,10 @@ public class CajaController {
             @RequestBody EmitirComprobanteRequest request,
             Authentication auth) {
         Long cajeroId = Long.parseLong(auth.getName());
-        return ResponseEntity.ok(ApiResponse.ok(cajaService.emitirComprobante(cajeroId, request)));
+        boolean puedeAplicarDescuento = auth.getAuthorities().stream()
+                .anyMatch(authority -> "ROLE_AD".equals(authority.getAuthority()));
+        return ResponseEntity.ok(ApiResponse.ok(
+                cajaService.emitirComprobante(cajeroId, puedeAplicarDescuento, request)));
     }
 
     @GetMapping("/comprobante/{id}/escpos")
