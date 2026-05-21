@@ -51,6 +51,9 @@ public class ArqueoEntity {
     @Column
     private String notas;
 
+    @Transient
+    private BigDecimal totalRedondeo = BigDecimal.ZERO;
+
     public enum EstadoArqueo { ABIERTO, CERRADO }
 
     public Long getId() { return id; }
@@ -67,6 +70,7 @@ public class ArqueoEntity {
     public BigDecimal getDiferencia() { return diferencia; }
     public EstadoArqueo getEstado() { return estado; }
     public String getNotas() { return notas; }
+    public BigDecimal getTotalRedondeo() { return totalRedondeo; }
 
     public void setCajeroId(Long cajeroId) { this.cajeroId = cajeroId; }
     public void setNombreCajero(String nombreCajero) { this.nombreCajero = nombreCajero; }
@@ -81,4 +85,5 @@ public class ArqueoEntity {
     public void setDiferencia(BigDecimal diferencia) { this.diferencia = diferencia; }
     public void setEstado(EstadoArqueo estado) { this.estado = estado; }
     public void setNotas(String notas) { this.notas = notas; }
+    public void setTotalRedondeo(BigDecimal totalRedondeo) { this.totalRedondeo = totalRedondeo; }
 }

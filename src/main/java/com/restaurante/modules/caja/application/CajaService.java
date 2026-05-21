@@ -350,10 +350,12 @@ public class CajaService {
         if (recibido == null) {
             throw new BusinessException("El efectivo recibido es obligatorio", HttpStatus.BAD_REQUEST);
         }
-        if (recibido.compareTo(total) < 0) {
+        BigDecimal recibidoNormalizado = recibido.setScale(2, RoundingMode.HALF_UP);
+        BigDecimal totalExigible = aplicarRedondeoSegunMetodo(total, metodoPago).setScale(2, RoundingMode.HALF_UP);
+        if (recibidoNormalizado.compareTo(totalExigible) < 0) {
             throw new BusinessException("El efectivo recibido no cubre el total", HttpStatus.BAD_REQUEST);
         }
-        return recibido;
+        return recibidoNormalizado;
     }
 
     private BigDecimal aplicarRedondeoSegunMetodo(BigDecimal total,

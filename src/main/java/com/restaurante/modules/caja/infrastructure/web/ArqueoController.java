@@ -57,6 +57,7 @@ public class ArqueoController {
             BigDecimal totalVentas,
             BigDecimal totalEfectivo,
             BigDecimal totalDigital,
+            BigDecimal totalRedondeo,
             BigDecimal montoEsperado,
             BigDecimal montoCierre,
             BigDecimal diferencia
@@ -73,6 +74,7 @@ public class ArqueoController {
                         .sorted((a, b) -> b.getAperturaEn().compareTo(a.getAperturaEn()))
                         .limit(10)
                         .toList();
+        arqueos.forEach(this::enriquecerArqueoConResumen);
         return ResponseEntity.ok(ApiResponse.ok(arqueos));
     }
 
@@ -83,6 +85,7 @@ public class ArqueoController {
                 : arqueoRepo.findTopByCajeroIdAndEstadoOrderByAperturaEnDesc(
                         usuarioId(auth), ArqueoEntity.EstadoArqueo.ABIERTO))
                 .orElseThrow(() -> new BusinessException("No hay arqueo abierto", HttpStatus.NOT_FOUND));
+        enriquecerArqueoConResumen(arqueo);
         return ResponseEntity.ok(ApiResponse.ok(arqueo));
     }
 
@@ -209,7 +212,7 @@ public class ArqueoController {
         return ResponseEntity.ok(ApiResponse.ok(new ArqueoReporteResponse(
                 arqueo.getId(), arqueo.getCajeroId(), arqueo.getNombreCajero(),
                 arqueo.getMontoApertura(), resumen.totalVentas(), resumen.totalEfectivo(),
-                resumen.totalDigital(), resumen.montoEsperado(), montoCierre, diferencia
+                resumen.totalDigital(), resumen.totalRedondeo(), resumen.montoEsperado(), montoCierre, diferencia
         )));
     }
 
@@ -225,14 +228,37 @@ public class ArqueoController {
                 .filter(c -> c.getMetodoPago() == ComprobanteEntity.MetodoPago.EFECTIVO)
                 .map(ComprobanteEntity::getTotal)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal totalRedondeo = ventas.stream()
+                .filter(c -> c.getMetodoPago() == ComprobanteEntity.MetodoPago.EFECTIVO)
+                .map(c -> {
+                    BigDecimal subtotal = c.getSubtotal() == null ? BigDecimal.ZERO : c.getSubtotal();
+                    BigDecimal igv = c.getIgv() == null ? BigDecimal.ZERO : c.getIgv();
+                    BigDecimal descuento = c.getDescuento() == null ? BigDecimal.ZERO : c.getDescuento();
+                    BigDecimal totalTeorico = subtotal.add(igv).subtract(descuento);
+                    BigDecimal totalReal = c.getTotal() == null ? BigDecimal.ZERO : c.getTotal();
+                    BigDecimal redondeo = totalTeorico.subtract(totalReal);
+                    return redondeo.signum() > 0 ? redondeo : BigDecimal.ZERO;
+                })
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal totalDigital = totalVentas.subtract(totalEfectivo);
         BigDecimal montoEsperado = (arqueo.getMontoApertura() == null ? BigDecimal.ZERO : arqueo.getMontoApertura())
                 .add(totalEfectivo);
-        return new ResumenArqueo(totalVentas, totalEfectivo, totalDigital, montoEsperado);
+        return new ResumenArqueo(totalVentas, totalEfectivo, totalDigital, totalRedondeo, montoEsperado);
     }
 
     private record ResumenArqueo(BigDecimal totalVentas, BigDecimal totalEfectivo,
-                                 BigDecimal totalDigital, BigDecimal montoEsperado) {}
+                                 BigDecimal totalDigital, BigDecimal totalRedondeo,
+                                 BigDecimal montoEsperado) {}
+
+    private void enriquecerArqueoConResumen(ArqueoEntity arqueo) {
+        LocalDateTime fin = arqueo.getCierreEn() != null ? arqueo.getCierreEn() : LocalDateTime.now();
+        ResumenArqueo resumen = calcularResumen(arqueo, fin);
+        arqueo.setTotalVentas(resumen.totalVentas());
+        arqueo.setTotalEfectivo(resumen.totalEfectivo());
+        arqueo.setTotalDigital(resumen.totalDigital());
+        arqueo.setMontoEsperado(resumen.montoEsperado());
+        arqueo.setTotalRedondeo(resumen.totalRedondeo());
+    }
 
     private Long usuarioId(Authentication auth) {
         return Long.parseLong(auth.getName());
