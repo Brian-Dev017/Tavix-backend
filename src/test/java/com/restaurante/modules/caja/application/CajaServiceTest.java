@@ -2,6 +2,8 @@ package com.restaurante.modules.caja.application;
 
 import com.restaurante.modules.caja.infrastructure.persistence.ComprobanteJpaRepo;
 import com.restaurante.modules.caja.infrastructure.persistence.ComprobanteEntity;
+import com.restaurante.modules.caja.infrastructure.persistence.ArqueoEntity;
+import com.restaurante.modules.caja.infrastructure.persistence.ArqueoJpaRepo;
 import com.restaurante.modules.caja.infrastructure.persistence.DatosComprobanteJpaRepo;
 import com.restaurante.modules.caja.infrastructure.web.dto.EmitirComprobanteRequest;
 import com.restaurante.modules.configuracion.infrastructure.persistence.SerieComprobanteEntity;
@@ -22,6 +24,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -35,6 +38,7 @@ import static org.mockito.Mockito.when;
 class CajaServiceTest {
 
     @Mock private ComprobanteJpaRepo comprobanteRepo;
+    @Mock private ArqueoJpaRepo arqueoRepo;
     @Mock private DatosComprobanteJpaRepo datosRepo;
     @Mock private PedidoJpaRepo pedidoRepo;
     @Mock private SerieComprobanteJpaRepo serieRepo;
@@ -47,7 +51,7 @@ class CajaServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new CajaService(comprobanteRepo, datosRepo, pedidoRepo, serieRepo,
+        service = new CajaService(comprobanteRepo, arqueoRepo, datosRepo, pedidoRepo, serieRepo,
                 detalleRepo, productoRepo);
         ReflectionTestUtils.setField(service, "em", entityManager);
     }
@@ -62,7 +66,8 @@ class CajaServiceTest {
 
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> service.emitirComprobante(2L,
-                        false, new EmitirComprobanteRequest(8L, "T", "EFECTIVO", null, null, null)));
+                        false, new EmitirComprobanteRequest(8L, "T", "EFECTIVO", null, null, null,
+                                new BigDecimal("10.00"))));
 
         assertEquals(HttpStatus.CONFLICT, exception.getStatus());
         assertEquals("Solo se puede cobrar un pedido LISTO", exception.getMessage());
@@ -81,9 +86,13 @@ class CajaServiceTest {
 
         when(comprobanteRepo.findByPedidoId(8L)).thenReturn(Optional.empty());
         when(pedidoRepo.findById(8L)).thenReturn(Optional.of(pedido));
+        ArqueoEntity arqueo = new ArqueoEntity();
+        arqueo.setCajeroId(2L);
+        when(arqueoRepo.findTopByCajeroIdAndEstadoOrderByAperturaEnDesc(2L, ArqueoEntity.EstadoArqueo.ABIERTO))
+                .thenReturn(Optional.of(arqueo));
         when(entityManager.createNativeQuery(anyString())).thenReturn(query);
         when(query.setParameter(1, 8L)).thenReturn(query);
-        when(query.getResultList()).thenReturn(List.of(new Object[] {
+        when(query.getResultList()).thenReturn(Collections.singletonList(new Object[] {
                 new BigDecimal("20.00"), new BigDecimal("3.60"), new BigDecimal("23.60")
         }));
         when(serieRepo.findTopByTipoAndActivoTrueOrderByIdAsc("T")).thenReturn(Optional.of(serie));
@@ -93,23 +102,18 @@ class CajaServiceTest {
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
         service.emitirComprobante(2L, false,
-                new EmitirComprobanteRequest(8L, "T", "EFECTIVO", null, null, null));
+                new EmitirComprobanteRequest(8L, "T", "EFECTIVO", null, null, null,
+                        new BigDecimal("30.00")));
 
         assertEquals(PedidoEntity.EstadoPedido.COBRADO, pedido.getEstado());
     }
 
     @Test
     void emitirComprobanteRechazaDescuentoSinPermisoAdmin() {
-        PedidoEntity pedido = new PedidoEntity();
-        pedido.setEstado(PedidoEntity.EstadoPedido.LISTO);
-
-        when(comprobanteRepo.findByPedidoId(8L)).thenReturn(Optional.empty());
-        when(pedidoRepo.findById(8L)).thenReturn(Optional.of(pedido));
-
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> service.emitirComprobante(2L, false,
                         new EmitirComprobanteRequest(8L, "T", "EFECTIVO", null,
-                                new BigDecimal("1.00"), "Cortesia")));
+                                new BigDecimal("1.00"), "Cortesia", new BigDecimal("30.00"))));
 
         assertEquals(HttpStatus.FORBIDDEN, exception.getStatus());
         assertEquals("Solo un administrador puede aplicar descuentos", exception.getMessage());

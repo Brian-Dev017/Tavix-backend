@@ -10,10 +10,13 @@ public record ComprobanteResponseDTO(
         String serie,
         Integer numero,
         String metodoPago,
+        String tipoComprobanteNombre,
         BigDecimal subtotal,
         BigDecimal igv,
         BigDecimal descuento,
         BigDecimal total,
+        BigDecimal efectivoRecibido,
+        BigDecimal vuelto,
         String estado,
         LocalDateTime pagadoEn
 ) {}

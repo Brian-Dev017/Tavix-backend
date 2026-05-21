@@ -4,6 +4,8 @@ import com.restaurante.modules.caja.infrastructure.persistence.ComprobanteEntity
 import com.restaurante.modules.caja.infrastructure.persistence.ComprobanteJpaRepo;
 import com.restaurante.modules.caja.infrastructure.persistence.DatosComprobanteEntity;
 import com.restaurante.modules.caja.infrastructure.persistence.DatosComprobanteJpaRepo;
+import com.restaurante.modules.caja.infrastructure.persistence.ArqueoEntity;
+import com.restaurante.modules.caja.infrastructure.persistence.ArqueoJpaRepo;
 import com.restaurante.modules.caja.infrastructure.web.dto.ComprobanteResponseDTO;
 import com.restaurante.modules.caja.infrastructure.web.dto.DatosComprobanteRequest;
 import com.restaurante.modules.caja.infrastructure.web.dto.EmitirComprobanteRequest;
@@ -37,6 +39,7 @@ public class CajaService {
     private EntityManager em;
 
     private final ComprobanteJpaRepo comprobanteRepo;
+    private final ArqueoJpaRepo arqueoRepo;
     private final DatosComprobanteJpaRepo datosRepo;
     private final PedidoJpaRepo pedidoRepo;
     private final SerieComprobanteJpaRepo serieRepo;
@@ -44,12 +47,14 @@ public class CajaService {
     private final ProductoJpaRepo productoRepo;
 
     public CajaService(ComprobanteJpaRepo comprobanteRepo,
+                       ArqueoJpaRepo arqueoRepo,
                        DatosComprobanteJpaRepo datosRepo,
                        PedidoJpaRepo pedidoRepo,
                        SerieComprobanteJpaRepo serieRepo,
                        DetallePedidoJpaRepo detalleRepo,
                        ProductoJpaRepo productoRepo) {
         this.comprobanteRepo = comprobanteRepo;
+        this.arqueoRepo = arqueoRepo;
         this.datosRepo = datosRepo;
         this.pedidoRepo = pedidoRepo;
         this.serieRepo = serieRepo;
@@ -105,6 +110,10 @@ public class CajaService {
         String tipo = normalizarTipo(request.tipoComprobanteId());
         validarDatosComprobante(tipo, request.datosComprobante());
         ComprobanteEntity.MetodoPago metodoPago = parseMetodoPago(request.metodoPago());
+        ArqueoEntity arqueo = arqueoRepo
+                .findTopByCajeroIdAndEstadoOrderByAperturaEnDesc(cajeroId, ArqueoEntity.EstadoArqueo.ABIERTO)
+                .orElseThrow(() -> new BusinessException("Debes aperturar tu caja antes de cobrar",
+                        HttpStatus.CONFLICT));
 
         Object[] t = cargarTotales(request.pedidoId());
         BigDecimal subtotal = (BigDecimal) t[0];
@@ -112,6 +121,10 @@ public class CajaService {
         BigDecimal totalBruto = (BigDecimal) t[2];
         BigDecimal descuento = normalizarDescuento(request.descuento(), totalBruto, request.motivoDescuento());
         BigDecimal total = totalBruto.subtract(descuento);
+        BigDecimal efectivoRecibido = normalizarEfectivoRecibido(metodoPago, request.efectivoRecibido(), total);
+        BigDecimal vuelto = metodoPago == ComprobanteEntity.MetodoPago.EFECTIVO
+                ? efectivoRecibido.subtract(total)
+                : BigDecimal.ZERO;
 
         Long datosId = guardarDatosSiCorresponde(tipo, request.datosComprobante());
         SerieComprobanteEntity serie = serieRepo.findTopByTipoAndActivoTrueOrderByIdAsc(tipo)
@@ -124,6 +137,7 @@ public class CajaService {
         ComprobanteEntity comp = new ComprobanteEntity();
         comp.setPedidoId(request.pedidoId());
         comp.setCajeroId(cajeroId);
+        comp.setArqueoCajaId(arqueo.getId());
         comp.setTipoComprobanteId(tipo);
         comp.setSerie(serie.getSerie());
         comp.setNumero(numero);
@@ -134,6 +148,8 @@ public class CajaService {
         comp.setMotivoDescuento(limpiar(request.motivoDescuento()));
         comp.setTotal(total);
         comp.setMetodoPago(metodoPago);
+        comp.setEfectivoRecibido(efectivoRecibido);
+        comp.setVuelto(vuelto);
         ComprobanteEntity saved = comprobanteRepo.save(comp);
 
         saved.setEstado(ComprobanteEntity.EstadoComprobante.COMPLETADO);
@@ -147,8 +163,9 @@ public class CajaService {
         return new ComprobanteResponseDTO(
                 saved.getId(), saved.getPedidoId(),
                 saved.getTipoComprobanteId(), saved.getSerie(), saved.getNumero(),
-                saved.getMetodoPago().name(),
+                saved.getMetodoPago().name(), nombreTipoComprobante(saved.getTipoComprobanteId()),
                 subtotal, igv, descuento, total,
+                saved.getEfectivoRecibido(), saved.getVuelto(),
                 saved.getEstado().name(), saved.getPagadoEn()
         );
     }
@@ -161,13 +178,17 @@ public class CajaService {
         String ticket = "\u001B@"
                 + "LA FLOR DEL TUMBO\n"
                 + "COMPROBANTE " + serieNumero + "\n"
-                + "TIPO: " + comp.getTipoComprobanteId() + "\n"
+                + "TIPO: " + nombreTipoComprobante(comp.getTipoComprobanteId()) + "\n"
                 + "PAGO: " + comp.getMetodoPago().name() + "\n"
                 + "------------------------------\n"
                 + "SUBTOTAL: S/ " + comp.getSubtotal() + "\n"
                 + "IGV:      S/ " + comp.getIgv() + "\n"
                 + "DSCTO:    S/ " + comp.getDescuento() + "\n"
                 + "TOTAL:    S/ " + comp.getTotal() + "\n"
+                + (comp.getMetodoPago() == ComprobanteEntity.MetodoPago.EFECTIVO
+                    ? "RECIBIDO: S/ " + comp.getEfectivoRecibido() + "\n"
+                    + "VUELTO:   S/ " + comp.getVuelto() + "\n"
+                    : "")
                 + "------------------------------\n"
                 + "Gracias por su visita\n\n\n"
                 + "\u001DV\u0001";
@@ -266,6 +287,29 @@ public class CajaService {
             throw new BusinessException("El motivo de descuento es obligatorio", HttpStatus.BAD_REQUEST);
         }
         return value;
+    }
+
+    private BigDecimal normalizarEfectivoRecibido(ComprobanteEntity.MetodoPago metodoPago,
+                                                  BigDecimal recibido,
+                                                  BigDecimal total) {
+        if (metodoPago != ComprobanteEntity.MetodoPago.EFECTIVO) {
+            return null;
+        }
+        if (recibido == null) {
+            throw new BusinessException("El efectivo recibido es obligatorio", HttpStatus.BAD_REQUEST);
+        }
+        if (recibido.compareTo(total) < 0) {
+            throw new BusinessException("El efectivo recibido no cubre el total", HttpStatus.BAD_REQUEST);
+        }
+        return recibido;
+    }
+
+    private String nombreTipoComprobante(String tipo) {
+        return switch (tipo) {
+            case "B" -> "Boleta";
+            case "F" -> "Factura";
+            default -> "Ticket";
+        };
     }
 
     private boolean tieneDescuento(BigDecimal descuento) {

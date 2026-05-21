@@ -50,16 +50,18 @@ class PedidoServiceTest {
     void agregarPrimerItemMuevePedidoAEnCocina() {
         PedidoEntity pedido = new PedidoEntity();
         pedido.setSesionMesaId(7L);
+        SesionMesaEntity sesion = new SesionMesaEntity();
+        sesion.setMeseroId(1L);
         ProductoEntity producto = new ProductoEntity();
         producto.setNombre("Ceviche");
         producto.setPrecio(new BigDecimal("25.00"));
 
         when(pedidoRepo.findById(3L)).thenReturn(Optional.of(pedido));
+        when(sesionRepo.findById(7L)).thenReturn(Optional.of(sesion));
         when(productoRepo.findById(11L)).thenReturn(Optional.of(producto));
         when(detalleRepo.save(any(DetallePedidoEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        when(sesionRepo.findById(7L)).thenReturn(Optional.empty());
 
-        service.agregarItem(3L, new AgregarItemRequest(11L, 2, "sin cebolla"));
+        service.agregarItem(3L, new AgregarItemRequest(11L, 2, "sin cebolla"), 1L, true);
 
         assertEquals(PedidoEntity.EstadoPedido.EN_COCINA, pedido.getEstado());
         verify(pedidoRepo).save(pedido);
@@ -69,14 +71,17 @@ class PedidoServiceTest {
     void agregarItemRechazaProductoNoDisponible() {
         PedidoEntity pedido = new PedidoEntity();
         pedido.setSesionMesaId(7L);
+        SesionMesaEntity sesion = new SesionMesaEntity();
+        sesion.setMeseroId(1L);
         ProductoEntity producto = new ProductoEntity();
         producto.setDisponible(false);
 
         when(pedidoRepo.findById(3L)).thenReturn(Optional.of(pedido));
+        when(sesionRepo.findById(7L)).thenReturn(Optional.of(sesion));
         when(productoRepo.findById(11L)).thenReturn(Optional.of(producto));
 
         BusinessException exception = assertThrows(BusinessException.class,
-                () -> service.agregarItem(3L, new AgregarItemRequest(11L, 1, null)));
+                () -> service.agregarItem(3L, new AgregarItemRequest(11L, 1, null), 1L, true));
 
         assertEquals(HttpStatus.CONFLICT, exception.getStatus());
         assertEquals("Producto no disponible", exception.getMessage());

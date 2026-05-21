@@ -7,6 +7,7 @@ import com.restaurante.modules.pedidos.infrastructure.web.dto.ItemPedidoDTO;
 import com.restaurante.shared.response.ApiResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -23,20 +24,32 @@ public class PedidoController {
     }
 
     @PostMapping
-    public ResponseEntity<ApiResponse<Map<String, Long>>> crear(@Valid @RequestBody CrearPedidoRequest request) {
-        Long id = pedidoService.crearPedido(request);
+    public ResponseEntity<ApiResponse<Map<String, Long>>> crear(@Valid @RequestBody CrearPedidoRequest request,
+                                                                 Authentication auth) {
+        Long id = pedidoService.crearPedido(request, usuarioId(auth), esAdmin(auth));
         return ResponseEntity.ok(ApiResponse.ok("Pedido creado", Map.of("id", id)));
     }
 
     @PostMapping("/{id}/items")
     public ResponseEntity<ApiResponse<ItemPedidoDTO>> agregarItem(
             @PathVariable Long id,
-            @Valid @RequestBody AgregarItemRequest request) {
-        return ResponseEntity.ok(ApiResponse.ok("Ítem agregado", pedidoService.agregarItem(id, request)));
+            @Valid @RequestBody AgregarItemRequest request,
+            Authentication auth) {
+        return ResponseEntity.ok(ApiResponse.ok("Item agregado",
+                pedidoService.agregarItem(id, request, usuarioId(auth), esAdmin(auth))));
     }
 
     @GetMapping("/{id}/items")
-    public ResponseEntity<ApiResponse<List<ItemPedidoDTO>>> getItems(@PathVariable Long id) {
-        return ResponseEntity.ok(ApiResponse.ok(pedidoService.getDetalle(id)));
+    public ResponseEntity<ApiResponse<List<ItemPedidoDTO>>> getItems(@PathVariable Long id, Authentication auth) {
+        return ResponseEntity.ok(ApiResponse.ok(pedidoService.getDetalle(id, usuarioId(auth), esAdmin(auth))));
+    }
+
+    private Long usuarioId(Authentication auth) {
+        return Long.parseLong(auth.getName());
+    }
+
+    private boolean esAdmin(Authentication auth) {
+        return auth.getAuthorities().stream()
+                .anyMatch(authority -> "ROLE_AD".equals(authority.getAuthority()));
     }
 }

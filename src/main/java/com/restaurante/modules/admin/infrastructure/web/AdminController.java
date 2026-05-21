@@ -7,6 +7,8 @@ import com.restaurante.modules.auth.infrastructure.persistence.UsuarioJpaRepo;
 import com.restaurante.modules.catalogo.infrastructure.persistence.CategoriaJpaRepo;
 import com.restaurante.modules.catalogo.infrastructure.persistence.ProductoEntity;
 import com.restaurante.modules.catalogo.infrastructure.persistence.ProductoJpaRepo;
+import com.restaurante.modules.caja.infrastructure.persistence.ComprobanteEntity;
+import com.restaurante.modules.caja.infrastructure.persistence.ComprobanteJpaRepo;
 import com.restaurante.modules.mesas.infrastructure.persistence.MesaEntity;
 import com.restaurante.modules.mesas.infrastructure.persistence.MesaJpaRepo;
 import com.restaurante.modules.mesas.application.MesaService;
@@ -34,13 +36,15 @@ public class AdminController {
     private final CategoriaJpaRepo categoriaRepo;
     private final MesaJpaRepo mesaRepo;
     private final PedidoJpaRepo pedidoRepo;
+    private final ComprobanteJpaRepo comprobanteRepo;
     private final MesaService mesaService;
     private final RefreshTokenRepositoryPort refreshTokenRepo;
     private final PasswordEncoder passwordEncoder;
 
     public AdminController(UsuarioJpaRepo usuarioRepo, ProductoJpaRepo productoRepo,
                            CategoriaJpaRepo categoriaRepo, MesaJpaRepo mesaRepo,
-                           PedidoJpaRepo pedidoRepo, MesaService mesaService,
+                           PedidoJpaRepo pedidoRepo, ComprobanteJpaRepo comprobanteRepo,
+                           MesaService mesaService,
                            RefreshTokenRepositoryPort refreshTokenRepo,
                            PasswordEncoder passwordEncoder) {
         this.usuarioRepo = usuarioRepo;
@@ -48,6 +52,7 @@ public class AdminController {
         this.categoriaRepo = categoriaRepo;
         this.mesaRepo = mesaRepo;
         this.pedidoRepo = pedidoRepo;
+        this.comprobanteRepo = comprobanteRepo;
         this.mesaService = mesaService;
         this.refreshTokenRepo = refreshTokenRepo;
         this.passwordEncoder = passwordEncoder;
@@ -147,6 +152,12 @@ public class AdminController {
             @PathVariable Long id, @RequestBody ResetPasswordRequest req) {
         UsuarioEntity u = usuarioRepo.findById(id)
                 .orElseThrow(() -> new BusinessException("Usuario no encontrado", HttpStatus.NOT_FOUND));
+        if (req.claveAnterior() == null || !passwordEncoder.matches(req.claveAnterior(), u.getContrasenaHash())) {
+            throw new BusinessException("La clave anterior no es correcta", HttpStatus.FORBIDDEN);
+        }
+        if (req.nuevaContrasena() == null || req.nuevaContrasena().length() < 6) {
+            throw new BusinessException("La nueva contrasena debe tener al menos 6 caracteres", HttpStatus.BAD_REQUEST);
+        }
         u.setContrasenaHash(passwordEncoder.encode(req.nuevaContrasena()));
         usuarioRepo.save(u);
         refreshTokenRepo.revokarPorUsuario(id);
@@ -206,6 +217,9 @@ public class AdminController {
             @PathVariable Long id, @RequestBody GuardarProductoRequest req) {
         ProductoEntity p = productoRepo.findById(id)
                 .orElseThrow(() -> new BusinessException("Producto no encontrado", HttpStatus.NOT_FOUND));
+        if (!p.isDisponible()) {
+            throw new BusinessException("No se puede editar un producto no disponible", HttpStatus.CONFLICT);
+        }
         String catNombre = categoriaRepo.findById(req.categoriaId())
                 .map(c -> c.getNombre())
                 .orElseThrow(() -> new BusinessException("Categoría no encontrada", HttpStatus.NOT_FOUND));
@@ -237,6 +251,64 @@ public class AdminController {
         }
         productoRepo.deleteById(id);
         return ResponseEntity.ok(ApiResponse.ok(null));
+    }
+
+    public record ComprobanteAnulacionDTO(
+            Long id,
+            Long pedidoId,
+            String tipoComprobante,
+            String serie,
+            Integer numero,
+            String metodoPago,
+            java.math.BigDecimal total,
+            String estado,
+            LocalDateTime pagadoEn
+    ) {}
+
+    public record AnularComprobanteRequest(String motivo) {}
+
+    @GetMapping("/comprobantes/emitidos")
+    public ResponseEntity<ApiResponse<List<ComprobanteAnulacionDTO>>> listarComprobantesEmitidos() {
+        List<ComprobanteAnulacionDTO> comprobantes = comprobanteRepo
+                .findByTipoComprobanteIdInAndEstadoOrderByPagadoEnDesc(
+                        List.of("B", "F"), ComprobanteEntity.EstadoComprobante.COMPLETADO)
+                .stream()
+                .map(c -> new ComprobanteAnulacionDTO(
+                        c.getId(), c.getPedidoId(), nombreTipoComprobante(c.getTipoComprobanteId()),
+                        c.getSerie(), c.getNumero(), c.getMetodoPago().name(), c.getTotal(),
+                        c.getEstado().name(), c.getPagadoEn()))
+                .toList();
+        return ResponseEntity.ok(ApiResponse.ok(comprobantes));
+    }
+
+    @PatchMapping("/comprobantes/{id}/anular")
+    public ResponseEntity<ApiResponse<Void>> anularComprobante(
+            @PathVariable Long id,
+            @RequestBody AnularComprobanteRequest request) {
+        if (request == null || request.motivo() == null || request.motivo().isBlank()) {
+            throw new BusinessException("El motivo de anulacion es obligatorio", HttpStatus.BAD_REQUEST);
+        }
+        ComprobanteEntity comp = comprobanteRepo.findById(id)
+                .orElseThrow(() -> new BusinessException("Comprobante no encontrado", HttpStatus.NOT_FOUND));
+        if (!"B".equals(comp.getTipoComprobanteId()) && !"F".equals(comp.getTipoComprobanteId())) {
+            throw new BusinessException("Solo se anulan boletas o facturas desde este flujo", HttpStatus.BAD_REQUEST);
+        }
+        if (comp.getEstado() != ComprobanteEntity.EstadoComprobante.COMPLETADO) {
+            throw new BusinessException("Solo se puede anular un comprobante completado", HttpStatus.CONFLICT);
+        }
+        comp.setEstado(ComprobanteEntity.EstadoComprobante.ANULADO);
+        comp.setMotivoAnulacion(request.motivo().trim());
+        comp.setAnuladoEn(LocalDateTime.now());
+        comprobanteRepo.save(comp);
+        return ResponseEntity.ok(ApiResponse.ok("Comprobante anulado", null));
+    }
+
+    private String nombreTipoComprobante(String tipo) {
+        return switch (tipo) {
+            case "B" -> "Boleta";
+            case "F" -> "Factura";
+            default -> "Ticket";
+        };
     }
 
     // ─── CATEGORÍAS ─────────────────────────────────────────────────────────

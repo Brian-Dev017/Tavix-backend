@@ -8,5 +8,6 @@ public record EmitirComprobanteRequest(
         String metodoPago,
         DatosComprobanteRequest datosComprobante,
         BigDecimal descuento,
-        String motivoDescuento
+        String motivoDescuento,
+        BigDecimal efectivoRecibido
 ) {}

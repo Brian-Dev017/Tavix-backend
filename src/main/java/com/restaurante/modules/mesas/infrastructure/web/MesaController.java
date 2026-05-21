@@ -37,8 +37,12 @@ public class MesaController {
 
     @PostMapping("/sesiones/{sesionId}/cerrar")
     public ResponseEntity<ApiResponse<Void>> cerrarSesion(
-            @PathVariable Long sesionId) {
-        mesaService.cerrarSesion(sesionId);
+            @PathVariable Long sesionId,
+            Authentication auth) {
+        Long usuarioId = Long.parseLong(auth.getName());
+        boolean admin = auth.getAuthorities().stream()
+                .anyMatch(authority -> "ROLE_AD".equals(authority.getAuthority()));
+        mesaService.cerrarSesionSiVacia(sesionId, usuarioId, admin);
         return ResponseEntity.ok(ApiResponse.ok("Sesión cerrada", null));
     }
 }

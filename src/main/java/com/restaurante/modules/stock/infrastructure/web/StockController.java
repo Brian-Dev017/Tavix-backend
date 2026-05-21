@@ -34,7 +34,11 @@ public class StockController {
         if (body.getUnidad() == null || body.getUnidad().isBlank()) {
             throw new BusinessException("La unidad es obligatoria", HttpStatus.BAD_REQUEST);
         }
+        if (body.getCategoria() == null || body.getCategoria().isBlank()) {
+            throw new BusinessException("La categoria es obligatoria", HttpStatus.BAD_REQUEST);
+        }
         body.setId(null);
+        body.setActivo(true);
         InsumoEntity saved = insumoRepo.save(body);
         return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok("Insumo creado", saved));
     }
@@ -51,13 +55,16 @@ public class StockController {
         if (body.getUnidad() != null && !body.getUnidad().isBlank()) {
             entity.setUnidad(body.getUnidad());
         }
+        if (body.getCategoria() != null && !body.getCategoria().isBlank()) {
+            entity.setCategoria(body.getCategoria());
+        }
+        entity.setFechaVencimiento(body.getFechaVencimiento());
         if (body.getStockActual() != null) {
             entity.setStockActual(body.getStockActual());
         }
         if (body.getStockMinimo() != null) {
             entity.setStockMinimo(body.getStockMinimo());
         }
-        entity.setActivo(body.isActivo());
         return ResponseEntity.ok(ApiResponse.ok("Insumo actualizado", insumoRepo.save(entity)));
     }
 

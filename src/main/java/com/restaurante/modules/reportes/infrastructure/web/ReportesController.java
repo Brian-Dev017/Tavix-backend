@@ -60,6 +60,9 @@ public class ReportesController {
     public record ComprobanteResumen(
             Long id,
             Long pedidoId,
+            String tipoComprobante,
+            String serie,
+            Integer numero,
             String metodoPago,
             BigDecimal total,
             String estado,
@@ -68,6 +71,24 @@ public class ReportesController {
     ) {}
 
     public record PlatoVendido(Long productoId, String nombre, long cantidad) {}
+
+    public record ItemDetalleReporte(String producto, int cantidad, BigDecimal precio, BigDecimal subtotal,
+                                     String estado, String observaciones) {}
+
+    public record PedidoDetalleReporte(
+            Long comprobanteId,
+            Long pedidoId,
+            String tipoComprobante,
+            String serie,
+            Integer numero,
+            String metodoPago,
+            BigDecimal subtotal,
+            BigDecimal igv,
+            BigDecimal descuento,
+            BigDecimal total,
+            LocalDateTime pagadoEn,
+            List<ItemDetalleReporte> items
+    ) {}
 
     public record DashboardResponse(
             BigDecimal ventasHoy,
@@ -158,6 +179,9 @@ public class ReportesController {
                 .map(c -> new ComprobanteResumen(
                         c.getId(),
                         c.getPedidoId(),
+                        nombreTipoComprobante(c.getTipoComprobanteId()),
+                        c.getSerie(),
+                        c.getNumero(),
                         c.getMetodoPago() != null ? c.getMetodoPago().name() : null,
                         c.getTotal(),
                         c.getEstado() != null ? c.getEstado().name() : null,
@@ -171,9 +195,13 @@ public class ReportesController {
     // ──────────────── GET /dashboard ────────────────
 
     @GetMapping("/dashboard")
-    public ResponseEntity<ApiResponse<DashboardResponse>> dashboard() {
-        LocalDateTime inicioDia = LocalDate.now().atStartOfDay();
-        LocalDateTime finDia = LocalDate.now().atTime(LocalTime.MAX);
+    public ResponseEntity<ApiResponse<DashboardResponse>> dashboard(
+            @RequestParam(required = false) String desde,
+            @RequestParam(required = false) String hasta) {
+        LocalDate desdeDate = desde != null ? LocalDate.parse(desde.substring(0, 10)) : LocalDate.now();
+        LocalDate hastaDate = hasta != null ? LocalDate.parse(hasta.substring(0, 10)) : LocalDate.now();
+        LocalDateTime inicioDia = desdeDate.atStartOfDay();
+        LocalDateTime finDia = hastaDate.atTime(LocalTime.MAX);
 
         // Ventas hoy
         List<ComprobanteEntity> comprobantesHoy = comprobanteRepo.findAll().stream()
@@ -241,5 +269,35 @@ public class ReportesController {
 
         return ResponseEntity.ok(ApiResponse.ok(
                 new DashboardResponse(ventasHoy, cantidadPedidosHoy, ventasPorMetodo, platosVendidos)));
+    }
+
+    @GetMapping("/historial/{comprobanteId}/detalle")
+    public ResponseEntity<ApiResponse<PedidoDetalleReporte>> detalle(@PathVariable Long comprobanteId) {
+        ComprobanteEntity comp = comprobanteRepo.findById(comprobanteId)
+                .orElseThrow(() -> new com.restaurante.shared.exception.BusinessException(
+                        "Comprobante no encontrado", org.springframework.http.HttpStatus.NOT_FOUND));
+        List<ItemDetalleReporte> items = detallePedidoRepo.findByPedidoId(comp.getPedidoId()).stream()
+                .map(d -> {
+                    String nombre = productoRepo.findById(d.getProductoId())
+                            .map(p -> p.getNombre())
+                            .orElse("Producto #" + d.getProductoId());
+                    BigDecimal subtotal = d.getPrecioUnitario().multiply(BigDecimal.valueOf(d.getCantidad()));
+                    return new ItemDetalleReporte(nombre, d.getCantidad(), d.getPrecioUnitario(), subtotal,
+                            d.getEstado().name(), d.getObservaciones());
+                })
+                .toList();
+        return ResponseEntity.ok(ApiResponse.ok(new PedidoDetalleReporte(
+                comp.getId(), comp.getPedidoId(), nombreTipoComprobante(comp.getTipoComprobanteId()),
+                comp.getSerie(), comp.getNumero(), comp.getMetodoPago().name(), comp.getSubtotal(),
+                comp.getIgv(), comp.getDescuento(), comp.getTotal(), comp.getPagadoEn(), items
+        )));
+    }
+
+    private String nombreTipoComprobante(String tipo) {
+        return switch (tipo) {
+            case "B" -> "Boleta";
+            case "F" -> "Factura";
+            default -> "Ticket";
+        };
     }
 }

@@ -23,14 +23,13 @@ public class MenuService {
         return categoriaRepo.findByActivoTrue().stream()
                 .map(cat -> {
                     List<ProductoDTO> productos = productoRepo
-                            .findByCategoriaIdAndDisponibleTrue(cat.getId())
+                            .findByCategoriaIdOrderByNombreAsc(cat.getId())
                             .stream()
                             .map(p -> new ProductoDTO(p.getId(), p.getNombre(),
-                                    p.getDescripcion(), p.getPrecio(), p.getImagenUrl()))
+                                    p.getDescripcion(), p.getPrecio(), p.getImagenUrl(), p.isDisponible()))
                             .toList();
                     return new CategoriaConProductosDTO(cat.getId(), cat.getNombre(), productos);
                 })
-                .filter(c -> !c.productos().isEmpty())
                 .toList();
     }
 }

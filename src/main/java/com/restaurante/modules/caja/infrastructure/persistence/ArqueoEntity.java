@@ -33,6 +33,18 @@ public class ArqueoEntity {
     @Column(name = "total_ventas", precision = 10, scale = 2)
     private BigDecimal totalVentas;
 
+    @Column(name = "total_efectivo", precision = 10, scale = 2)
+    private BigDecimal totalEfectivo = BigDecimal.ZERO;
+
+    @Column(name = "total_digital", precision = 10, scale = 2)
+    private BigDecimal totalDigital = BigDecimal.ZERO;
+
+    @Column(name = "monto_esperado", precision = 10, scale = 2)
+    private BigDecimal montoEsperado = BigDecimal.ZERO;
+
+    @Column(precision = 10, scale = 2)
+    private BigDecimal diferencia = BigDecimal.ZERO;
+
     @Enumerated(EnumType.STRING)
     private EstadoArqueo estado = EstadoArqueo.ABIERTO;
 
@@ -49,6 +61,10 @@ public class ArqueoEntity {
     public BigDecimal getMontoApertura() { return montoApertura; }
     public BigDecimal getMontoCierre() { return montoCierre; }
     public BigDecimal getTotalVentas() { return totalVentas; }
+    public BigDecimal getTotalEfectivo() { return totalEfectivo; }
+    public BigDecimal getTotalDigital() { return totalDigital; }
+    public BigDecimal getMontoEsperado() { return montoEsperado; }
+    public BigDecimal getDiferencia() { return diferencia; }
     public EstadoArqueo getEstado() { return estado; }
     public String getNotas() { return notas; }
 
@@ -59,6 +75,10 @@ public class ArqueoEntity {
     public void setMontoApertura(BigDecimal montoApertura) { this.montoApertura = montoApertura; }
     public void setMontoCierre(BigDecimal montoCierre) { this.montoCierre = montoCierre; }
     public void setTotalVentas(BigDecimal totalVentas) { this.totalVentas = totalVentas; }
+    public void setTotalEfectivo(BigDecimal totalEfectivo) { this.totalEfectivo = totalEfectivo; }
+    public void setTotalDigital(BigDecimal totalDigital) { this.totalDigital = totalDigital; }
+    public void setMontoEsperado(BigDecimal montoEsperado) { this.montoEsperado = montoEsperado; }
+    public void setDiferencia(BigDecimal diferencia) { this.diferencia = diferencia; }
     public void setEstado(EstadoArqueo estado) { this.estado = estado; }
     public void setNotas(String notas) { this.notas = notas; }
 }

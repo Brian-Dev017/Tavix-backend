@@ -42,11 +42,14 @@ public class PedidoService {
     }
 
     @Transactional
-    public Long crearPedido(CrearPedidoRequest request) {
+    public Long crearPedido(CrearPedidoRequest request, Long usuarioId, boolean admin) {
         var sesion = sesionRepo.findById(request.sesionMesaId())
                 .orElseThrow(() -> new BusinessException("Sesion de mesa no encontrada", HttpStatus.NOT_FOUND));
         if (sesion.getCerradaEn() != null) {
             throw new BusinessException("La sesion de mesa esta cerrada", HttpStatus.CONFLICT);
+        }
+        if (!admin && !sesion.getMeseroId().equals(usuarioId)) {
+            throw new BusinessException("Esta mesa esta siendo atendida por otro mesero", HttpStatus.FORBIDDEN);
         }
 
         return pedidoRepo
@@ -62,9 +65,18 @@ public class PedidoService {
     }
 
     @Transactional
-    public ItemPedidoDTO agregarItem(Long pedidoId, AgregarItemRequest request) {
+    public ItemPedidoDTO agregarItem(Long pedidoId, AgregarItemRequest request, Long usuarioId, boolean admin) {
         PedidoEntity pedido = pedidoRepo.findById(pedidoId)
                 .orElseThrow(() -> new BusinessException("Pedido no encontrado", HttpStatus.NOT_FOUND));
+        var sesion = sesionRepo.findById(pedido.getSesionMesaId())
+                .orElseThrow(() -> new BusinessException("Sesion de mesa no encontrada", HttpStatus.NOT_FOUND));
+        if (sesion.getCerradaEn() != null) {
+            throw new BusinessException("La sesion de mesa esta cerrada", HttpStatus.CONFLICT);
+        }
+        if (!admin && !sesion.getMeseroId().equals(usuarioId)) {
+            throw new BusinessException("No puedes agregar items a una mesa tomada por otro mesero",
+                    HttpStatus.FORBIDDEN);
+        }
 
         if (pedido.getEstado() == PedidoEntity.EstadoPedido.COBRADO
                 || pedido.getEstado() == PedidoEntity.EstadoPedido.CANCELADO) {
@@ -110,7 +122,14 @@ public class PedidoService {
         );
     }
 
-    public List<ItemPedidoDTO> getDetalle(Long pedidoId) {
+    public List<ItemPedidoDTO> getDetalle(Long pedidoId, Long usuarioId, boolean admin) {
+        PedidoEntity pedido = pedidoRepo.findById(pedidoId)
+                .orElseThrow(() -> new BusinessException("Pedido no encontrado", HttpStatus.NOT_FOUND));
+        var sesion = sesionRepo.findById(pedido.getSesionMesaId())
+                .orElseThrow(() -> new BusinessException("Sesion de mesa no encontrada", HttpStatus.NOT_FOUND));
+        if (!admin && !sesion.getMeseroId().equals(usuarioId)) {
+            throw new BusinessException("No puedes ver un pedido de otro mesero", HttpStatus.FORBIDDEN);
+        }
         return detalleRepo.findByPedidoId(pedidoId).stream()
                 .map(d -> {
                     String nombre = productoRepo.findById(d.getProductoId())
