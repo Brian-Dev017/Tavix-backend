@@ -12,12 +12,16 @@ import com.restaurante.modules.caja.infrastructure.web.dto.EmitirComprobanteRequ
 import com.restaurante.modules.caja.infrastructure.web.dto.PedidoResumenDTO;
 import com.restaurante.modules.configuracion.infrastructure.persistence.SerieComprobanteEntity;
 import com.restaurante.modules.configuracion.infrastructure.persistence.SerieComprobanteJpaRepo;
+import com.restaurante.modules.configuracion.infrastructure.persistence.NegocioConfigJpaRepo;
+import com.restaurante.modules.configuracion.infrastructure.persistence.NegocioConfigEntity;
 import com.restaurante.modules.catalogo.infrastructure.persistence.ProductoJpaRepo;
+import com.restaurante.modules.mesas.application.MesaService;
 import com.restaurante.modules.pedidos.infrastructure.persistence.DetallePedidoJpaRepo;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoEntity;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoJpaRepo;
 import com.restaurante.modules.pedidos.infrastructure.web.dto.ItemPedidoDTO;
 import com.restaurante.shared.exception.BusinessException;
+import com.restaurante.shared.audit.AuditoriaValidacionService;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.springframework.http.HttpStatus;
@@ -26,6 +30,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
@@ -45,6 +50,9 @@ public class CajaService {
     private final SerieComprobanteJpaRepo serieRepo;
     private final DetallePedidoJpaRepo detalleRepo;
     private final ProductoJpaRepo productoRepo;
+    private final MesaService mesaService;
+    private final NegocioConfigJpaRepo negocioRepo;
+    private final AuditoriaValidacionService auditoriaValidacionService;
 
     public CajaService(ComprobanteJpaRepo comprobanteRepo,
                        ArqueoJpaRepo arqueoRepo,
@@ -52,7 +60,10 @@ public class CajaService {
                        PedidoJpaRepo pedidoRepo,
                        SerieComprobanteJpaRepo serieRepo,
                        DetallePedidoJpaRepo detalleRepo,
-                       ProductoJpaRepo productoRepo) {
+                       ProductoJpaRepo productoRepo,
+                       MesaService mesaService,
+                       NegocioConfigJpaRepo negocioRepo,
+                       AuditoriaValidacionService auditoriaValidacionService) {
         this.comprobanteRepo = comprobanteRepo;
         this.arqueoRepo = arqueoRepo;
         this.datosRepo = datosRepo;
@@ -60,6 +71,9 @@ public class CajaService {
         this.serieRepo = serieRepo;
         this.detalleRepo = detalleRepo;
         this.productoRepo = productoRepo;
+        this.mesaService = mesaService;
+        this.negocioRepo = negocioRepo;
+        this.auditoriaValidacionService = auditoriaValidacionService;
     }
 
     @SuppressWarnings("unchecked")
@@ -87,96 +101,130 @@ public class CajaService {
     @Transactional
     public ComprobanteResponseDTO emitirComprobante(Long cajeroId, boolean puedeAplicarDescuento,
                                                     EmitirComprobanteRequest request) {
-        validarRequestBasico(request);
-        if (!puedeAplicarDescuento && tieneDescuento(request.descuento())) {
-            throw new BusinessException("Solo un administrador puede aplicar descuentos", HttpStatus.FORBIDDEN);
+        String rolActor = puedeAplicarDescuento ? "AD" : "CA";
+        Long referenciaId = request != null ? request.pedidoId() : null;
+        String datosAuditoria = resumirRequest(request);
+        try {
+            validarRequestBasico(request);
+            if (!puedeAplicarDescuento && tieneDescuento(request.descuento())) {
+                throw new BusinessException("Solo un administrador puede aplicar descuentos", HttpStatus.FORBIDDEN);
+            }
+
+            if (comprobanteRepo.findByPedidoId(request.pedidoId()).isPresent()) {
+                throw new BusinessException("Ya existe un comprobante para este pedido", HttpStatus.CONFLICT);
+            }
+
+            PedidoEntity pedido = pedidoRepo.findById(request.pedidoId())
+                    .orElseThrow(() -> new BusinessException("Pedido no encontrado", HttpStatus.NOT_FOUND));
+
+            if (pedido.getEstado() == PedidoEntity.EstadoPedido.COBRADO
+                    || pedido.getEstado() == PedidoEntity.EstadoPedido.CANCELADO) {
+                throw new BusinessException("El pedido ya fue cerrado", HttpStatus.BAD_REQUEST);
+            }
+            if (pedido.getEstado() != PedidoEntity.EstadoPedido.LISTO) {
+                throw new BusinessException("Solo se puede cobrar un pedido LISTO", HttpStatus.CONFLICT);
+            }
+
+            String tipo = normalizarTipo(request.tipoComprobanteId());
+            validarDatosComprobante(tipo, request.datosComprobante());
+            ComprobanteEntity.MetodoPago metodoPago = parseMetodoPago(request.metodoPago());
+            ArqueoEntity arqueo = arqueoRepo
+                    .findTopByCajeroIdAndEstadoOrderByAperturaEnDesc(cajeroId, ArqueoEntity.EstadoArqueo.ABIERTO)
+                    .orElseThrow(() -> new BusinessException("Debes aperturar tu caja antes de cobrar",
+                            HttpStatus.CONFLICT));
+
+            Object[] t = cargarTotales(request.pedidoId());
+            BigDecimal subtotal = (BigDecimal) t[0];
+            BigDecimal igv = (BigDecimal) t[1];
+            BigDecimal totalBruto = (BigDecimal) t[2];
+            BigDecimal descuento = normalizarDescuento(request.descuento(), totalBruto, request.motivoDescuento());
+            BigDecimal total = aplicarRedondeoSegunMetodo(totalBruto.subtract(descuento), metodoPago);
+            BigDecimal efectivoRecibido = normalizarEfectivoRecibido(metodoPago, request.efectivoRecibido(), total);
+            BigDecimal vuelto = metodoPago == ComprobanteEntity.MetodoPago.EFECTIVO
+                    ? efectivoRecibido.subtract(total)
+                    : BigDecimal.ZERO;
+
+            Long datosId = guardarDatosSiCorresponde(tipo, request.datosComprobante());
+            SerieComprobanteEntity serie = serieRepo.findTopByTipoAndActivoTrueOrderByIdAsc(tipo)
+                    .orElseThrow(() -> new BusinessException("No hay serie activa para el comprobante " + tipo,
+                            HttpStatus.CONFLICT));
+            int numero = serie.getCorrelativoActual();
+            serie.setCorrelativoActual(numero + 1);
+            serieRepo.save(serie);
+
+            ComprobanteEntity comp = new ComprobanteEntity();
+            comp.setPedidoId(request.pedidoId());
+            comp.setCajeroId(cajeroId);
+            comp.setArqueoCajaId(arqueo.getId());
+            comp.setTipoComprobanteId(tipo);
+            comp.setSerie(serie.getSerie());
+            comp.setNumero(numero);
+            comp.setDatosComprobanteId(datosId);
+            comp.setSubtotal(subtotal);
+            comp.setIgv(igv);
+            comp.setDescuento(descuento);
+            comp.setMotivoDescuento(limpiar(request.motivoDescuento()));
+            comp.setTotal(total);
+            comp.setMetodoPago(metodoPago);
+            comp.setEfectivoRecibido(efectivoRecibido);
+            comp.setVuelto(vuelto);
+            ComprobanteEntity saved = comprobanteRepo.save(comp);
+
+            saved.setEstado(ComprobanteEntity.EstadoComprobante.COMPLETADO);
+            saved.setPagadoEn(LocalDateTime.now());
+            saved.setActualizadoEn(LocalDateTime.now());
+            saved = comprobanteRepo.saveAndFlush(saved);
+
+            pedido.setEstado(PedidoEntity.EstadoPedido.COBRADO);
+            pedidoRepo.save(pedido);
+            if (pedido.getSesionMesaId() != null) {
+                mesaService.cerrarSesion(pedido.getSesionMesaId());
+            }
+
+            auditoriaValidacionService.registrar(
+                    "CAJA", "EMITIR_COMPROBANTE", cajeroId, rolActor, request.pedidoId(),
+                    "OK", "Comprobante emitido correctamente", datosAuditoria);
+
+            return new ComprobanteResponseDTO(
+                    saved.getId(), saved.getPedidoId(),
+                    saved.getTipoComprobanteId(), saved.getSerie(), saved.getNumero(),
+                    saved.getMetodoPago().name(), nombreTipoComprobante(saved.getTipoComprobanteId()),
+                    subtotal, igv, descuento, total,
+                    saved.getEfectivoRecibido(), saved.getVuelto(),
+                    saved.getEstado().name(), saved.getPagadoEn()
+            );
+        } catch (BusinessException ex) {
+            auditoriaValidacionService.registrar(
+                    "CAJA", "EMITIR_COMPROBANTE", cajeroId, rolActor, referenciaId,
+                    "ERROR", ex.getMessage(), datosAuditoria);
+            throw ex;
+        } catch (RuntimeException ex) {
+            auditoriaValidacionService.registrar(
+                    "CAJA", "EMITIR_COMPROBANTE", cajeroId, rolActor, referenciaId,
+                    "ERROR", "Error inesperado al emitir comprobante", datosAuditoria);
+            throw ex;
         }
-
-        if (comprobanteRepo.findByPedidoId(request.pedidoId()).isPresent()) {
-            throw new BusinessException("Ya existe un comprobante para este pedido", HttpStatus.CONFLICT);
-        }
-
-        PedidoEntity pedido = pedidoRepo.findById(request.pedidoId())
-                .orElseThrow(() -> new BusinessException("Pedido no encontrado", HttpStatus.NOT_FOUND));
-
-        if (pedido.getEstado() == PedidoEntity.EstadoPedido.COBRADO
-                || pedido.getEstado() == PedidoEntity.EstadoPedido.CANCELADO) {
-            throw new BusinessException("El pedido ya fue cerrado", HttpStatus.BAD_REQUEST);
-        }
-        if (pedido.getEstado() != PedidoEntity.EstadoPedido.LISTO) {
-            throw new BusinessException("Solo se puede cobrar un pedido LISTO", HttpStatus.CONFLICT);
-        }
-
-        String tipo = normalizarTipo(request.tipoComprobanteId());
-        validarDatosComprobante(tipo, request.datosComprobante());
-        ComprobanteEntity.MetodoPago metodoPago = parseMetodoPago(request.metodoPago());
-        ArqueoEntity arqueo = arqueoRepo
-                .findTopByCajeroIdAndEstadoOrderByAperturaEnDesc(cajeroId, ArqueoEntity.EstadoArqueo.ABIERTO)
-                .orElseThrow(() -> new BusinessException("Debes aperturar tu caja antes de cobrar",
-                        HttpStatus.CONFLICT));
-
-        Object[] t = cargarTotales(request.pedidoId());
-        BigDecimal subtotal = (BigDecimal) t[0];
-        BigDecimal igv = (BigDecimal) t[1];
-        BigDecimal totalBruto = (BigDecimal) t[2];
-        BigDecimal descuento = normalizarDescuento(request.descuento(), totalBruto, request.motivoDescuento());
-        BigDecimal total = totalBruto.subtract(descuento);
-        BigDecimal efectivoRecibido = normalizarEfectivoRecibido(metodoPago, request.efectivoRecibido(), total);
-        BigDecimal vuelto = metodoPago == ComprobanteEntity.MetodoPago.EFECTIVO
-                ? efectivoRecibido.subtract(total)
-                : BigDecimal.ZERO;
-
-        Long datosId = guardarDatosSiCorresponde(tipo, request.datosComprobante());
-        SerieComprobanteEntity serie = serieRepo.findTopByTipoAndActivoTrueOrderByIdAsc(tipo)
-                .orElseThrow(() -> new BusinessException("No hay serie activa para el comprobante " + tipo,
-                        HttpStatus.CONFLICT));
-        int numero = serie.getCorrelativoActual();
-        serie.setCorrelativoActual(numero + 1);
-        serieRepo.save(serie);
-
-        ComprobanteEntity comp = new ComprobanteEntity();
-        comp.setPedidoId(request.pedidoId());
-        comp.setCajeroId(cajeroId);
-        comp.setArqueoCajaId(arqueo.getId());
-        comp.setTipoComprobanteId(tipo);
-        comp.setSerie(serie.getSerie());
-        comp.setNumero(numero);
-        comp.setDatosComprobanteId(datosId);
-        comp.setSubtotal(subtotal);
-        comp.setIgv(igv);
-        comp.setDescuento(descuento);
-        comp.setMotivoDescuento(limpiar(request.motivoDescuento()));
-        comp.setTotal(total);
-        comp.setMetodoPago(metodoPago);
-        comp.setEfectivoRecibido(efectivoRecibido);
-        comp.setVuelto(vuelto);
-        ComprobanteEntity saved = comprobanteRepo.save(comp);
-
-        saved.setEstado(ComprobanteEntity.EstadoComprobante.COMPLETADO);
-        saved.setPagadoEn(LocalDateTime.now());
-        saved.setActualizadoEn(LocalDateTime.now());
-        saved = comprobanteRepo.saveAndFlush(saved);
-
-        pedido.setEstado(PedidoEntity.EstadoPedido.COBRADO);
-        pedidoRepo.save(pedido);
-
-        return new ComprobanteResponseDTO(
-                saved.getId(), saved.getPedidoId(),
-                saved.getTipoComprobanteId(), saved.getSerie(), saved.getNumero(),
-                saved.getMetodoPago().name(), nombreTipoComprobante(saved.getTipoComprobanteId()),
-                subtotal, igv, descuento, total,
-                saved.getEfectivoRecibido(), saved.getVuelto(),
-                saved.getEstado().name(), saved.getPagadoEn()
-        );
     }
 
     public byte[] generarEscPos(Long comprobanteId) {
         ComprobanteEntity comp = comprobanteRepo.findById(comprobanteId)
                 .orElseThrow(() -> new BusinessException("Comprobante no encontrado", HttpStatus.NOT_FOUND));
+        NegocioConfigEntity negocio = negocioRepo.findById(1L).orElse(null);
+        String nombreNegocio = negocio != null && !estaVacio(negocio.getNombreComercial())
+                ? limpiar(negocio.getNombreComercial())
+                : "LA FLOR DEL TUMBO";
+        String rucNegocio = negocio != null && !estaVacio(negocio.getRucNegocio())
+                ? limpiar(negocio.getRucNegocio())
+                : null;
+        String direccionNegocio = negocio != null && !estaVacio(negocio.getDireccion())
+                ? limpiar(negocio.getDireccion())
+                : null;
 
         String serieNumero = comp.getSerie() + "-" + String.format("%08d", comp.getNumero());
         String ticket = "\u001B@"
-                + "LA FLOR DEL TUMBO\n"
+                + nombreNegocio + "\n"
+                + (rucNegocio != null ? "RUC: " + rucNegocio + "\n" : "")
+                + (direccionNegocio != null ? direccionNegocio + "\n" : "")
                 + "COMPROBANTE " + serieNumero + "\n"
                 + "TIPO: " + nombreTipoComprobante(comp.getTipoComprobanteId()) + "\n"
                 + "PAGO: " + comp.getMetodoPago().name() + "\n"
@@ -242,16 +290,20 @@ public class CajaService {
         if ("F".equals(tipo)) {
             if (datos == null
                     || !soloDigitos(datos.rucDni(), 11)
-                    || estaVacio(datos.razonSocial())
-                    || estaVacio(datos.direccion())) {
+                    || !textoValido(datos.razonSocial(), 3, 120)
+                    || !textoValido(datos.direccion(), 5, 160)) {
                 throw new BusinessException("Factura requiere RUC de 11 digitos, razon social y direccion",
                         HttpStatus.BAD_REQUEST);
             }
         }
-        if ("B".equals(tipo) && datos != null && !estaVacio(datos.rucDni())
-                && !soloDigitos(datos.rucDni(), 8)) {
-            throw new BusinessException("Boleta requiere DNI de 8 digitos cuando se informa",
-                    HttpStatus.BAD_REQUEST);
+        if ("B".equals(tipo)) {
+            if (datos == null
+                    || !soloDigitos(datos.rucDni(), 8)
+                    || !textoNombreBoletaValido(datos.razonSocial())
+                    || !estaVacio(datos.direccion())) {
+                throw new BusinessException("Boleta requiere DNI de 8 digitos, nombre y apellido; no lleva direccion",
+                        HttpStatus.BAD_REQUEST);
+            }
         }
     }
 
@@ -304,6 +356,18 @@ public class CajaService {
         return recibido;
     }
 
+    private BigDecimal aplicarRedondeoSegunMetodo(BigDecimal total,
+                                                  ComprobanteEntity.MetodoPago metodoPago) {
+        if (metodoPago != ComprobanteEntity.MetodoPago.EFECTIVO) {
+            return total;
+        }
+        return total
+                .movePointRight(1)
+                .setScale(0, RoundingMode.DOWN)
+                .movePointLeft(1)
+                .setScale(2, RoundingMode.UNNECESSARY);
+    }
+
     private String nombreTipoComprobante(String tipo) {
         return switch (tipo) {
             case "B" -> "Boleta";
@@ -324,7 +388,30 @@ public class CajaService {
         return value == null || value.isBlank();
     }
 
+    private boolean textoValido(String value, int min, int max) {
+        if (estaVacio(value)) return false;
+        String limpio = value.trim().replaceAll("\\s+", " ");
+        if (limpio.length() < min || limpio.length() > max) return false;
+        return limpio.matches("[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .,'#\\-/]+");
+    }
+
+    private boolean textoNombreBoletaValido(String value) {
+        if (estaVacio(value)) return false;
+        String limpio = value.trim().replaceAll("\\s+", " ");
+        if (limpio.length() < 3 || limpio.length() > 120) return false;
+        return limpio.matches("[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]+");
+    }
+
     private String limpiar(String value) {
         return value == null ? null : value.trim();
+    }
+
+    private String resumirRequest(EmitirComprobanteRequest request) {
+        if (request == null) return "request=null";
+        return "pedidoId=" + request.pedidoId()
+                + ", tipo=" + limpiar(request.tipoComprobanteId())
+                + ", metodo=" + limpiar(request.metodoPago())
+                + ", descuento=" + request.descuento()
+                + ", doc=" + (request.datosComprobante() != null ? limpiar(request.datosComprobante().rucDni()) : null);
     }
 }

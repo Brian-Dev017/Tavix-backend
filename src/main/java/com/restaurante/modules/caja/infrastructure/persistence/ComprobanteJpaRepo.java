@@ -10,6 +10,10 @@ import java.util.Optional;
 public interface ComprobanteJpaRepo extends JpaRepository<ComprobanteEntity, Long> {
     Optional<ComprobanteEntity> findByPedidoId(Long pedidoId);
     Page<ComprobanteEntity> findByEstado(ComprobanteEntity.EstadoComprobante estado, Pageable pageable);
+    List<ComprobanteEntity> findByTipoComprobanteIdInAndEstadoAndNumeroOrderByPagadoEnDesc(
+            List<String> tipos,
+            ComprobanteEntity.EstadoComprobante estado,
+            Integer numero);
     List<ComprobanteEntity> findByCajeroIdAndEstadoAndPagadoEnBetween(
             Long cajeroId,
             ComprobanteEntity.EstadoComprobante estado,

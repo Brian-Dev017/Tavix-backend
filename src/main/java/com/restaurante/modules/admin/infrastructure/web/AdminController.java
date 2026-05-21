@@ -281,6 +281,24 @@ public class AdminController {
         return ResponseEntity.ok(ApiResponse.ok(comprobantes));
     }
 
+    @GetMapping("/comprobantes/emitidos/buscar")
+    public ResponseEntity<ApiResponse<List<ComprobanteAnulacionDTO>>> buscarComprobantesEmitidosPorNumero(
+            @RequestParam Integer numero) {
+        if (numero == null || numero <= 0) {
+            throw new BusinessException("El numero de comprobante debe ser mayor a cero", HttpStatus.BAD_REQUEST);
+        }
+        List<ComprobanteAnulacionDTO> comprobantes = comprobanteRepo
+                .findByTipoComprobanteIdInAndEstadoAndNumeroOrderByPagadoEnDesc(
+                        List.of("B", "F"), ComprobanteEntity.EstadoComprobante.COMPLETADO, numero)
+                .stream()
+                .map(c -> new ComprobanteAnulacionDTO(
+                        c.getId(), c.getPedidoId(), nombreTipoComprobante(c.getTipoComprobanteId()),
+                        c.getSerie(), c.getNumero(), c.getMetodoPago().name(), c.getTotal(),
+                        c.getEstado().name(), c.getPagadoEn()))
+                .toList();
+        return ResponseEntity.ok(ApiResponse.ok(comprobantes));
+    }
+
     @PatchMapping("/comprobantes/{id}/anular")
     public ResponseEntity<ApiResponse<Void>> anularComprobante(
             @PathVariable Long id,

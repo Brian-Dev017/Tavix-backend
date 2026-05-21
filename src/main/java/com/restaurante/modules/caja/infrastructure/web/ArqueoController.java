@@ -1,14 +1,17 @@
 package com.restaurante.modules.caja.infrastructure.web;
 
 import com.restaurante.modules.auth.infrastructure.persistence.UsuarioJpaRepo;
+import com.restaurante.modules.auth.infrastructure.persistence.UsuarioEntity;
 import com.restaurante.modules.caja.infrastructure.persistence.ArqueoEntity;
 import com.restaurante.modules.caja.infrastructure.persistence.ArqueoJpaRepo;
 import com.restaurante.modules.caja.infrastructure.persistence.ComprobanteEntity;
 import com.restaurante.modules.caja.infrastructure.persistence.ComprobanteJpaRepo;
 import com.restaurante.shared.exception.BusinessException;
+import com.restaurante.shared.audit.AuditoriaValidacionService;
 import com.restaurante.shared.response.ApiResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
@@ -23,13 +26,19 @@ public class ArqueoController {
     private final ArqueoJpaRepo arqueoRepo;
     private final ComprobanteJpaRepo comprobanteRepo;
     private final UsuarioJpaRepo usuarioRepo;
+    private final PasswordEncoder passwordEncoder;
+    private final AuditoriaValidacionService auditoriaValidacionService;
 
     public ArqueoController(ArqueoJpaRepo arqueoRepo,
                             ComprobanteJpaRepo comprobanteRepo,
-                            UsuarioJpaRepo usuarioRepo) {
+                            UsuarioJpaRepo usuarioRepo,
+                            PasswordEncoder passwordEncoder,
+                            AuditoriaValidacionService auditoriaValidacionService) {
         this.arqueoRepo = arqueoRepo;
         this.comprobanteRepo = comprobanteRepo;
         this.usuarioRepo = usuarioRepo;
+        this.passwordEncoder = passwordEncoder;
+        this.auditoriaValidacionService = auditoriaValidacionService;
     }
 
     // ──────────────── DTOs ────────────────
@@ -37,6 +46,8 @@ public class ArqueoController {
     public record AbrirArqueoRequest(Long cajeroId, BigDecimal montoApertura, String notas) {}
 
     public record CerrarArqueoRequest(BigDecimal montoCierre, String notas) {}
+
+    public record PrecierreArqueoRequest(String usuario, String contrasena, BigDecimal montoEfectivo, String notas) {}
 
     public record ArqueoReporteResponse(
             Long arqueoId,
@@ -67,8 +78,10 @@ public class ArqueoController {
 
     @GetMapping("/activo")
     public ResponseEntity<ApiResponse<ArqueoEntity>> activo(Authentication auth) {
-        ArqueoEntity arqueo = arqueoRepo
-                .findTopByCajeroIdAndEstadoOrderByAperturaEnDesc(usuarioId(auth), ArqueoEntity.EstadoArqueo.ABIERTO)
+        ArqueoEntity arqueo = (esAdmin(auth)
+                ? arqueoRepo.findTopByEstadoOrderByAperturaEnDesc(ArqueoEntity.EstadoArqueo.ABIERTO)
+                : arqueoRepo.findTopByCajeroIdAndEstadoOrderByAperturaEnDesc(
+                        usuarioId(auth), ArqueoEntity.EstadoArqueo.ABIERTO))
                 .orElseThrow(() -> new BusinessException("No hay arqueo abierto", HttpStatus.NOT_FOUND));
         return ResponseEntity.ok(ApiResponse.ok(arqueo));
     }
@@ -96,6 +109,52 @@ public class ArqueoController {
 
         ArqueoEntity guardado = arqueoRepo.save(arqueo);
         return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok("Arqueo abierto", guardado));
+    }
+
+    @PostMapping("/{id}/precierre")
+    public ResponseEntity<ApiResponse<ArqueoEntity>> registrarPrecierre(@PathVariable Long id,
+                                                                        @RequestBody PrecierreArqueoRequest req,
+                                                                        Authentication auth) {
+        Long usuarioAuthId = usuarioId(auth);
+        String rolAuth = esAdmin(auth) ? "AD" : "CA";
+        String datosAuditoria = "arqueoId=" + id + ", usuario=" + (req != null ? req.usuario() : null)
+                + ", montoEfectivo=" + (req != null ? req.montoEfectivo() : null);
+        ArqueoEntity arqueo = arqueoRepo.findById(id)
+                .orElseThrow(() -> new BusinessException("Arqueo no encontrado", HttpStatus.NOT_FOUND));
+        try {
+            if (!esAdmin(auth) && !arqueo.getCajeroId().equals(usuarioAuthId)) {
+                throw new BusinessException("No puedes registrar el pre-cierre de otro cajero", HttpStatus.FORBIDDEN);
+            }
+            if (arqueo.getEstado() == ArqueoEntity.EstadoArqueo.CERRADO) {
+                throw new BusinessException("El arqueo ya esta cerrado", HttpStatus.CONFLICT);
+            }
+            validarCredencialesPrecierre(req, usuarioAuthId);
+
+            BigDecimal montoEfectivo = req.montoEfectivo() == null ? BigDecimal.ZERO : req.montoEfectivo();
+            if (montoEfectivo.signum() < 0) {
+                throw new BusinessException("El monto de efectivo debe ser mayor o igual a cero", HttpStatus.BAD_REQUEST);
+            }
+
+            ResumenArqueo resumen = calcularResumen(arqueo, LocalDateTime.now());
+            arqueo.setMontoCierre(montoEfectivo);
+            arqueo.setTotalVentas(resumen.totalVentas());
+            arqueo.setTotalEfectivo(resumen.totalEfectivo());
+            arqueo.setTotalDigital(resumen.totalDigital());
+            arqueo.setMontoEsperado(resumen.montoEsperado());
+            arqueo.setDiferencia(montoEfectivo.subtract(resumen.montoEsperado()));
+            if (req.notas() != null) arqueo.setNotas(req.notas());
+
+            ArqueoEntity guardado = arqueoRepo.save(arqueo);
+            auditoriaValidacionService.registrar(
+                    "CAJA", "PRECIERRE_CAJA", usuarioAuthId, rolAuth, id,
+                    "OK", "Pre-cierre registrado correctamente", datosAuditoria);
+            return ResponseEntity.ok(ApiResponse.ok("Pre-cierre registrado", guardado));
+        } catch (BusinessException ex) {
+            auditoriaValidacionService.registrar(
+                    "CAJA", "PRECIERRE_CAJA", usuarioAuthId, rolAuth, id,
+                    "ERROR", ex.getMessage(), datosAuditoria);
+            throw ex;
+        }
     }
 
     @PostMapping("/{id}/cerrar")
@@ -182,5 +241,19 @@ public class ArqueoController {
     private boolean esAdmin(Authentication auth) {
         return auth.getAuthorities().stream()
                 .anyMatch(authority -> "ROLE_AD".equals(authority.getAuthority()));
+    }
+
+    private void validarCredencialesPrecierre(PrecierreArqueoRequest req, Long usuarioAuthId) {
+        if (req == null || req.usuario() == null || req.usuario().isBlank()
+                || req.contrasena() == null || req.contrasena().isBlank()) {
+            throw new BusinessException("Debes validar las credenciales del cajero actual", HttpStatus.BAD_REQUEST);
+        }
+        UsuarioEntity usuario = usuarioRepo.findByUsuario(req.usuario().trim())
+                .orElseThrow(() -> new BusinessException("Las credenciales no pertenecen al cajero actual", HttpStatus.FORBIDDEN));
+        if (!usuario.isActivo()
+                || !usuario.getId().equals(usuarioAuthId)
+                || !passwordEncoder.matches(req.contrasena(), usuario.getContrasenaHash())) {
+            throw new BusinessException("Las credenciales no pertenecen al cajero actual", HttpStatus.FORBIDDEN);
+        }
     }
 }
