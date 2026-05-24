@@ -104,7 +104,18 @@ public class CocinaService {
         List<DetallePedidoEntity> activos = detalles.stream()
                 .filter(d -> d.getEstado() != DetallePedidoEntity.EstadoDetalle.CANCELADO)
                 .toList();
-        if (activos.isEmpty()) return;
+        if (activos.isEmpty()) {
+            pedidoRepo.findById(pedidoId).ifPresent(pedido -> {
+                if (pedido.getEstado() != PedidoEntity.EstadoPedido.COBRADO
+                        && pedido.getEstado() != PedidoEntity.EstadoPedido.CANCELADO) {
+                    pedido.setEstado(PedidoEntity.EstadoPedido.CANCELADO);
+                    pedido.setMotivoCancelacion("Todos los items del pedido fueron cancelados");
+                    pedido.setCanceladoEn(LocalDateTime.now());
+                    pedidoRepo.save(pedido);
+                }
+            });
+            return;
+        }
 
         boolean todosListos = activos.stream()
                 .allMatch(d -> d.getEstado() == DetallePedidoEntity.EstadoDetalle.LISTO);

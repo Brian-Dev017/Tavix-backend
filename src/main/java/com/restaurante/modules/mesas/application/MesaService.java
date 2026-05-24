@@ -11,6 +11,7 @@ import com.restaurante.modules.auth.infrastructure.persistence.UsuarioJpaRepo;
 import com.restaurante.shared.exception.BusinessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
@@ -72,7 +73,7 @@ public class MesaService {
         return sesion.getId();
     }
 
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void cerrarSesion(Long sesionId) {
         SesionMesaEntity sesion = sesionRepo.findById(sesionId)
                 .orElseThrow(() -> new BusinessException("Sesión no encontrada", HttpStatus.NOT_FOUND));

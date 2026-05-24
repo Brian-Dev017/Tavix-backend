@@ -27,6 +27,8 @@ import jakarta.persistence.PersistenceContext;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.nio.charset.StandardCharsets;
 import java.math.BigDecimal;
@@ -39,6 +41,7 @@ import java.util.Set;
 public class CajaService {
 
     private static final Set<String> TIPOS_COMPROBANTE = Set.of("T", "B", "F");
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(CajaService.class);
 
     @PersistenceContext
     private EntityManager em;
@@ -82,6 +85,8 @@ public class CajaService {
                 "SELECT pedido_id, mesa, mesero, total_items, subtotal, igv, total_con_igv, estado_pedido " +
                 "FROM v_consumo_por_pedido " +
                 "WHERE estado_pedido IN ('ABIERTO','EN_COCINA','LISTO') " +
+                "AND total_items > 0 " +
+                "AND total_con_igv > 0 " +
                 "ORDER BY pedido_id ASC"
         ).getResultList();
 
@@ -178,7 +183,7 @@ public class CajaService {
             pedido.setEstado(PedidoEntity.EstadoPedido.COBRADO);
             pedidoRepo.save(pedido);
             if (pedido.getSesionMesaId() != null) {
-                mesaService.cerrarSesion(pedido.getSesionMesaId());
+                programarLiberacionMesa(pedido.getSesionMesaId(), request.pedidoId());
             }
 
             auditoriaValidacionService.registrar(
@@ -415,5 +420,28 @@ public class CajaService {
                 + ", metodo=" + limpiar(request.metodoPago())
                 + ", descuento=" + request.descuento()
                 + ", doc=" + (request.datosComprobante() != null ? limpiar(request.datosComprobante().rucDni()) : null);
+    }
+
+    private void programarLiberacionMesa(Long sesionMesaId, Long pedidoId) {
+        Runnable liberarMesa = () -> {
+            try {
+                mesaService.cerrarSesion(sesionMesaId);
+            } catch (RuntimeException ex) {
+                log.warn("El comprobante del pedido {} se emitio, pero no se pudo liberar la sesion de mesa {}: {}",
+                        pedidoId, sesionMesaId, ex.getMessage(), ex);
+            }
+        };
+
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    liberarMesa.run();
+                }
+            });
+            return;
+        }
+
+        liberarMesa.run();
     }
 }
