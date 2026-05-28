@@ -62,9 +62,6 @@ public class ConfiguracionController {
         if (body.getLogoUrl() != null) {
             entity.setLogoUrl(body.getLogoUrl());
         }
-        if (body.getIgvPorcentaje() != null) {
-            entity.setIgvPorcentaje(body.getIgvPorcentaje());
-        }
         return ResponseEntity.ok(ApiResponse.ok("Configuración de negocio actualizada", negocioRepo.save(entity)));
     }
 

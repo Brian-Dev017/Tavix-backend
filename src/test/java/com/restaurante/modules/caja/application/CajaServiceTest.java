@@ -14,6 +14,7 @@ import com.restaurante.modules.mesas.application.MesaService;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoEntity;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoJpaRepo;
 import com.restaurante.modules.pedidos.infrastructure.persistence.DetallePedidoJpaRepo;
+import com.restaurante.shared.audit.AuditoriaGlobalService;
 import com.restaurante.shared.exception.BusinessException;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
@@ -48,6 +49,7 @@ class CajaServiceTest {
     @Mock private ProductoJpaRepo productoRepo;
     @Mock private MesaService mesaService;
     @Mock private NegocioConfigJpaRepo negocioRepo;
+    @Mock private AuditoriaGlobalService auditoriaGlobalService;
     @Mock private EntityManager entityManager;
     @Mock private Query query;
 
@@ -56,7 +58,7 @@ class CajaServiceTest {
     @BeforeEach
     void setUp() {
         service = new CajaService(comprobanteRepo, arqueoRepo, datosRepo, pedidoRepo, serieRepo,
-                detalleRepo, productoRepo, mesaService, negocioRepo);
+                detalleRepo, productoRepo, mesaService, negocioRepo, auditoriaGlobalService);
         ReflectionTestUtils.setField(service, "em", entityManager);
     }
 
@@ -71,7 +73,7 @@ class CajaServiceTest {
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> service.emitirComprobante(2L,
                         false, new EmitirComprobanteRequest(8L, "T", "EFECTIVO", null, null, null,
-                                new BigDecimal("10.00"))));
+                                new BigDecimal("10.00")), null));
 
         assertEquals(HttpStatus.CONFLICT, exception.getStatus());
         assertEquals("Solo se puede cobrar un pedido LISTO", exception.getMessage());
@@ -97,7 +99,7 @@ class CajaServiceTest {
         when(entityManager.createNativeQuery(anyString())).thenReturn(query);
         when(query.setParameter(1, 8L)).thenReturn(query);
         when(query.getResultList()).thenReturn(Collections.singletonList(new Object[] {
-                new BigDecimal("20.00"), new BigDecimal("3.60"), new BigDecimal("23.60")
+                new BigDecimal("20.00"), new BigDecimal("3.60"), new BigDecimal("20.00")
         }));
         when(serieRepo.findTopByTipoAndActivoTrueOrderByIdAsc("T")).thenReturn(Optional.of(serie));
         when(comprobanteRepo.save(any(ComprobanteEntity.class)))
@@ -107,7 +109,7 @@ class CajaServiceTest {
 
         service.emitirComprobante(2L, false,
                 new EmitirComprobanteRequest(8L, "T", "EFECTIVO", null, null, null,
-                        new BigDecimal("30.00")));
+                        new BigDecimal("30.00")), null);
 
         assertEquals(PedidoEntity.EstadoPedido.COBRADO, pedido.getEstado());
     }
@@ -117,7 +119,7 @@ class CajaServiceTest {
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> service.emitirComprobante(2L, false,
                         new EmitirComprobanteRequest(8L, "T", "EFECTIVO", null,
-                                new BigDecimal("1.00"), "Cortesia", new BigDecimal("30.00"))));
+                                new BigDecimal("1.00"), "Cortesia", new BigDecimal("30.00")), null));
 
         assertEquals(HttpStatus.FORBIDDEN, exception.getStatus());
         assertEquals("Solo un administrador puede aplicar descuentos", exception.getMessage());

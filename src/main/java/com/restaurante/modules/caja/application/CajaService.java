@@ -140,10 +140,11 @@ public class CajaService {
 
         Object[] t = cargarTotales(request.pedidoId());
         BigDecimal subtotal = (BigDecimal) t[0];
-        BigDecimal igv = (BigDecimal) t[1];
         BigDecimal totalBruto = (BigDecimal) t[2];
         BigDecimal descuento = normalizarDescuento(request.descuento(), totalBruto, request.motivoDescuento());
-        BigDecimal total = aplicarRedondeoSegunMetodo(totalBruto.subtract(descuento), metodoPago);
+        BigDecimal totalAntesRedondeo = totalBruto.subtract(descuento);
+        BigDecimal igv = calcularIgvInformativo(totalAntesRedondeo);
+        BigDecimal total = aplicarRedondeoSegunMetodo(totalAntesRedondeo, metodoPago);
         BigDecimal efectivoRecibido = normalizarEfectivoRecibido(metodoPago, request.efectivoRecibido(), total);
         BigDecimal vuelto = metodoPago == ComprobanteEntity.MetodoPago.EFECTIVO
                 ? efectivoRecibido.subtract(total)
@@ -259,7 +260,7 @@ public class CajaService {
                 + "PAGO: " + comp.getMetodoPago().name() + "\n"
                 + "------------------------------\n"
                 + "SUBTOTAL: S/ " + comp.getSubtotal() + "\n"
-                + "IGV:      S/ " + comp.getIgv() + "\n"
+                + "IGV 18%:  S/ " + comp.getIgv() + "\n"
                 + "DSCTO:    S/ " + comp.getDescuento() + "\n"
                 + "TOTAL:    S/ " + comp.getTotal() + "\n"
                 + (comp.getMetodoPago() == ComprobanteEntity.MetodoPago.EFECTIVO
@@ -397,6 +398,10 @@ public class CajaService {
                 .setScale(0, RoundingMode.DOWN)
                 .movePointLeft(1)
                 .setScale(2, RoundingMode.UNNECESSARY);
+    }
+
+    private BigDecimal calcularIgvInformativo(BigDecimal totalVenta) {
+        return totalVenta.multiply(new BigDecimal("0.18")).setScale(2, RoundingMode.HALF_UP);
     }
 
     private String nombreTipoComprobante(String tipo) {

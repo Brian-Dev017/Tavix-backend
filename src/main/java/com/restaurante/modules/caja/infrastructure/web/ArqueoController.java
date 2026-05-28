@@ -215,9 +215,8 @@ public class ArqueoController {
                 .filter(c -> c.getMetodoPago() == ComprobanteEntity.MetodoPago.EFECTIVO)
                 .map(c -> {
                     BigDecimal subtotal = c.getSubtotal() == null ? BigDecimal.ZERO : c.getSubtotal();
-                    BigDecimal igv = c.getIgv() == null ? BigDecimal.ZERO : c.getIgv();
                     BigDecimal descuento = c.getDescuento() == null ? BigDecimal.ZERO : c.getDescuento();
-                    BigDecimal totalTeorico = subtotal.add(igv).subtract(descuento);
+                    BigDecimal totalTeorico = subtotal.subtract(descuento);
                     BigDecimal totalReal = c.getTotal() == null ? BigDecimal.ZERO : c.getTotal();
                     BigDecimal redondeo = totalTeorico.subtract(totalReal);
                     return redondeo.signum() > 0 ? redondeo : BigDecimal.ZERO;
