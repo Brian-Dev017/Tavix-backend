@@ -4,7 +4,9 @@ import com.restaurante.modules.caja.application.CajaService;
 import com.restaurante.modules.caja.infrastructure.web.dto.ComprobanteResponseDTO;
 import com.restaurante.modules.caja.infrastructure.web.dto.EmitirComprobanteRequest;
 import com.restaurante.modules.caja.infrastructure.web.dto.PedidoResumenDTO;
+import com.restaurante.shared.audit.AuditoriaContextoFactory;
 import com.restaurante.shared.response.ApiResponse;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -18,9 +20,11 @@ import java.util.List;
 public class CajaController {
 
     private final CajaService cajaService;
+    private final AuditoriaContextoFactory auditoriaContextoFactory;
 
-    public CajaController(CajaService cajaService) {
+    public CajaController(CajaService cajaService, AuditoriaContextoFactory auditoriaContextoFactory) {
         this.cajaService = cajaService;
+        this.auditoriaContextoFactory = auditoriaContextoFactory;
     }
 
     @GetMapping("/pedidos")
@@ -31,12 +35,17 @@ public class CajaController {
     @PostMapping("/comprobante")
     public ResponseEntity<ApiResponse<ComprobanteResponseDTO>> emitirComprobante(
             @RequestBody EmitirComprobanteRequest request,
+            HttpServletRequest httpRequest,
             Authentication auth) {
         Long cajeroId = Long.parseLong(auth.getName());
         boolean puedeAplicarDescuento = auth.getAuthorities().stream()
                 .anyMatch(authority -> "ROLE_AD".equals(authority.getAuthority()));
         return ResponseEntity.ok(ApiResponse.ok(
-                cajaService.emitirComprobante(cajeroId, puedeAplicarDescuento, request)));
+                cajaService.emitirComprobante(
+                        cajeroId,
+                        puedeAplicarDescuento,
+                        request,
+                        auditoriaContextoFactory.from(httpRequest, auth))));
     }
 
     @GetMapping("/comprobante/{id}/escpos")

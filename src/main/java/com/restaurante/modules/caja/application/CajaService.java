@@ -20,8 +20,9 @@ import com.restaurante.modules.pedidos.infrastructure.persistence.DetallePedidoJ
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoEntity;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoJpaRepo;
 import com.restaurante.modules.pedidos.infrastructure.web.dto.ItemPedidoDTO;
+import com.restaurante.shared.audit.AuditoriaContexto;
+import com.restaurante.shared.audit.AuditoriaGlobalService;
 import com.restaurante.shared.exception.BusinessException;
-import com.restaurante.shared.audit.AuditoriaValidacionService;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.springframework.http.HttpStatus;
@@ -34,7 +35,9 @@ import java.nio.charset.StandardCharsets;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 @Service
@@ -55,7 +58,7 @@ public class CajaService {
     private final ProductoJpaRepo productoRepo;
     private final MesaService mesaService;
     private final NegocioConfigJpaRepo negocioRepo;
-    private final AuditoriaValidacionService auditoriaValidacionService;
+    private final AuditoriaGlobalService auditoriaGlobalService;
 
     public CajaService(ComprobanteJpaRepo comprobanteRepo,
                        ArqueoJpaRepo arqueoRepo,
@@ -66,7 +69,7 @@ public class CajaService {
                        ProductoJpaRepo productoRepo,
                        MesaService mesaService,
                        NegocioConfigJpaRepo negocioRepo,
-                       AuditoriaValidacionService auditoriaValidacionService) {
+                       AuditoriaGlobalService auditoriaGlobalService) {
         this.comprobanteRepo = comprobanteRepo;
         this.arqueoRepo = arqueoRepo;
         this.datosRepo = datosRepo;
@@ -76,7 +79,7 @@ public class CajaService {
         this.productoRepo = productoRepo;
         this.mesaService = mesaService;
         this.negocioRepo = negocioRepo;
-        this.auditoriaValidacionService = auditoriaValidacionService;
+        this.auditoriaGlobalService = auditoriaGlobalService;
     }
 
     @SuppressWarnings("unchecked")
@@ -105,110 +108,131 @@ public class CajaService {
 
     @Transactional
     public ComprobanteResponseDTO emitirComprobante(Long cajeroId, boolean puedeAplicarDescuento,
-                                                    EmitirComprobanteRequest request) {
-        String rolActor = puedeAplicarDescuento ? "AD" : "CA";
-        Long referenciaId = request != null ? request.pedidoId() : null;
-        String datosAuditoria = resumirRequest(request);
-        try {
-            validarRequestBasico(request);
-            if (!puedeAplicarDescuento && tieneDescuento(request.descuento())) {
-                throw new BusinessException("Solo un administrador puede aplicar descuentos", HttpStatus.FORBIDDEN);
-            }
-
-            if (comprobanteRepo.findByPedidoId(request.pedidoId()).isPresent()) {
-                throw new BusinessException("Ya existe un comprobante para este pedido", HttpStatus.CONFLICT);
-            }
-
-            PedidoEntity pedido = pedidoRepo.findById(request.pedidoId())
-                    .orElseThrow(() -> new BusinessException("Pedido no encontrado", HttpStatus.NOT_FOUND));
-
-            if (pedido.getEstado() == PedidoEntity.EstadoPedido.COBRADO
-                    || pedido.getEstado() == PedidoEntity.EstadoPedido.CANCELADO) {
-                throw new BusinessException("El pedido ya fue cerrado", HttpStatus.BAD_REQUEST);
-            }
-            if (pedido.getEstado() != PedidoEntity.EstadoPedido.LISTO) {
-                throw new BusinessException("Solo se puede cobrar un pedido LISTO", HttpStatus.CONFLICT);
-            }
-
-            String tipo = normalizarTipo(request.tipoComprobanteId());
-            validarDatosComprobante(tipo, request.datosComprobante());
-            ComprobanteEntity.MetodoPago metodoPago = parseMetodoPago(request.metodoPago());
-            ArqueoEntity arqueo = arqueoRepo
-                    .findTopByCajeroIdAndEstadoOrderByAperturaEnDesc(cajeroId, ArqueoEntity.EstadoArqueo.ABIERTO)
-                    .orElseThrow(() -> new BusinessException("Debes aperturar tu caja antes de cobrar",
-                            HttpStatus.CONFLICT));
-
-            Object[] t = cargarTotales(request.pedidoId());
-            BigDecimal subtotal = (BigDecimal) t[0];
-            BigDecimal igv = (BigDecimal) t[1];
-            BigDecimal totalBruto = (BigDecimal) t[2];
-            BigDecimal descuento = normalizarDescuento(request.descuento(), totalBruto, request.motivoDescuento());
-            BigDecimal total = aplicarRedondeoSegunMetodo(totalBruto.subtract(descuento), metodoPago);
-            BigDecimal efectivoRecibido = normalizarEfectivoRecibido(metodoPago, request.efectivoRecibido(), total);
-            BigDecimal vuelto = metodoPago == ComprobanteEntity.MetodoPago.EFECTIVO
-                    ? efectivoRecibido.subtract(total)
-                    : BigDecimal.ZERO;
-
-            Long datosId = guardarDatosSiCorresponde(tipo, request.datosComprobante());
-            SerieComprobanteEntity serie = serieRepo.findTopByTipoAndActivoTrueOrderByIdAsc(tipo)
-                    .orElseThrow(() -> new BusinessException("No hay serie activa para el comprobante " + tipo,
-                            HttpStatus.CONFLICT));
-            int numero = serie.getCorrelativoActual();
-            serie.setCorrelativoActual(numero + 1);
-            serieRepo.save(serie);
-
-            ComprobanteEntity comp = new ComprobanteEntity();
-            comp.setPedidoId(request.pedidoId());
-            comp.setCajeroId(cajeroId);
-            comp.setArqueoCajaId(arqueo.getId());
-            comp.setTipoComprobanteId(tipo);
-            comp.setSerie(serie.getSerie());
-            comp.setNumero(numero);
-            comp.setDatosComprobanteId(datosId);
-            comp.setSubtotal(subtotal);
-            comp.setIgv(igv);
-            comp.setDescuento(descuento);
-            comp.setMotivoDescuento(limpiar(request.motivoDescuento()));
-            comp.setTotal(total);
-            comp.setMetodoPago(metodoPago);
-            comp.setEfectivoRecibido(efectivoRecibido);
-            comp.setVuelto(vuelto);
-            ComprobanteEntity saved = comprobanteRepo.save(comp);
-
-            saved.setEstado(ComprobanteEntity.EstadoComprobante.COMPLETADO);
-            saved.setPagadoEn(LocalDateTime.now());
-            saved.setActualizadoEn(LocalDateTime.now());
-            saved = comprobanteRepo.saveAndFlush(saved);
-
-            pedido.setEstado(PedidoEntity.EstadoPedido.COBRADO);
-            pedidoRepo.save(pedido);
-            if (pedido.getSesionMesaId() != null) {
-                programarLiberacionMesa(pedido.getSesionMesaId(), request.pedidoId());
-            }
-
-            auditoriaValidacionService.registrar(
-                    "CAJA", "EMITIR_COMPROBANTE", cajeroId, rolActor, request.pedidoId(),
-                    "OK", "Comprobante emitido correctamente", datosAuditoria);
-
-            return new ComprobanteResponseDTO(
-                    saved.getId(), saved.getPedidoId(),
-                    saved.getTipoComprobanteId(), saved.getSerie(), saved.getNumero(),
-                    saved.getMetodoPago().name(), nombreTipoComprobante(saved.getTipoComprobanteId()),
-                    subtotal, igv, descuento, total,
-                    saved.getEfectivoRecibido(), saved.getVuelto(),
-                    saved.getEstado().name(), saved.getPagadoEn()
-            );
-        } catch (BusinessException ex) {
-            auditoriaValidacionService.registrar(
-                    "CAJA", "EMITIR_COMPROBANTE", cajeroId, rolActor, referenciaId,
-                    "ERROR", ex.getMessage(), datosAuditoria);
-            throw ex;
-        } catch (RuntimeException ex) {
-            auditoriaValidacionService.registrar(
-                    "CAJA", "EMITIR_COMPROBANTE", cajeroId, rolActor, referenciaId,
-                    "ERROR", "Error inesperado al emitir comprobante", datosAuditoria);
-            throw ex;
+                                                    EmitirComprobanteRequest request,
+                                                    AuditoriaContexto auditoriaContexto) {
+        validarRequestBasico(request);
+        if (!puedeAplicarDescuento && tieneDescuento(request.descuento())) {
+            throw new BusinessException("Solo un administrador puede aplicar descuentos", HttpStatus.FORBIDDEN);
         }
+
+        if (comprobanteRepo.findByPedidoId(request.pedidoId()).isPresent()) {
+            throw new BusinessException("Ya existe un comprobante para este pedido", HttpStatus.CONFLICT);
+        }
+
+        PedidoEntity pedido = pedidoRepo.findById(request.pedidoId())
+                .orElseThrow(() -> new BusinessException("Pedido no encontrado", HttpStatus.NOT_FOUND));
+
+        if (pedido.getEstado() == PedidoEntity.EstadoPedido.COBRADO
+                || pedido.getEstado() == PedidoEntity.EstadoPedido.CANCELADO) {
+            throw new BusinessException("El pedido ya fue cerrado", HttpStatus.BAD_REQUEST);
+        }
+        if (pedido.getEstado() != PedidoEntity.EstadoPedido.LISTO) {
+            throw new BusinessException("Solo se puede cobrar un pedido LISTO", HttpStatus.CONFLICT);
+        }
+
+        String tipo = normalizarTipo(request.tipoComprobanteId());
+        validarDatosComprobante(tipo, request.datosComprobante());
+        ComprobanteEntity.MetodoPago metodoPago = parseMetodoPago(request.metodoPago());
+        ArqueoEntity arqueo = arqueoRepo
+                .findTopByCajeroIdAndEstadoOrderByAperturaEnDesc(cajeroId, ArqueoEntity.EstadoArqueo.ABIERTO)
+                .orElseThrow(() -> new BusinessException("Debes aperturar tu caja antes de cobrar",
+                        HttpStatus.CONFLICT));
+
+        Object[] t = cargarTotales(request.pedidoId());
+        BigDecimal subtotal = (BigDecimal) t[0];
+        BigDecimal igv = (BigDecimal) t[1];
+        BigDecimal totalBruto = (BigDecimal) t[2];
+        BigDecimal descuento = normalizarDescuento(request.descuento(), totalBruto, request.motivoDescuento());
+        BigDecimal total = aplicarRedondeoSegunMetodo(totalBruto.subtract(descuento), metodoPago);
+        BigDecimal efectivoRecibido = normalizarEfectivoRecibido(metodoPago, request.efectivoRecibido(), total);
+        BigDecimal vuelto = metodoPago == ComprobanteEntity.MetodoPago.EFECTIVO
+                ? efectivoRecibido.subtract(total)
+                : BigDecimal.ZERO;
+
+        DatosComprobanteEntity datosComprobante = guardarDatosSiCorresponde(tipo, request.datosComprobante());
+        Long datosId = datosComprobante != null ? datosComprobante.getId() : null;
+        if (datosComprobante != null) {
+            auditoriaGlobalService.registrar(
+                    "caja",
+                    "datos_comprobante",
+                    datosComprobante.getId().toString(),
+                    "CREAR",
+                    "Se registraron los datos del comprobante para el pedido " + request.pedidoId(),
+                    null,
+                    snapshotDatosComprobante(datosComprobante),
+                    auditoriaContexto
+            );
+        }
+
+        SerieComprobanteEntity serie = serieRepo.findTopByTipoAndActivoTrueOrderByIdAsc(tipo)
+                .orElseThrow(() -> new BusinessException("No hay serie activa para el comprobante " + tipo,
+                        HttpStatus.CONFLICT));
+        Map<String, Object> serieAntes = snapshotSerieComprobante(serie);
+        int numero = serie.getCorrelativoActual();
+        serie.setCorrelativoActual(numero + 1);
+        serieRepo.save(serie);
+        auditoriaGlobalService.registrar(
+                "caja",
+                "serie_comprobante",
+                serie.getId().toString(),
+                "ACTUALIZAR",
+                "Se actualizo el correlativo de la serie " + serie.getSerie(),
+                serieAntes,
+                snapshotSerieComprobante(serie),
+                auditoriaContexto
+        );
+
+        ComprobanteEntity comp = new ComprobanteEntity();
+        comp.setPedidoId(request.pedidoId());
+        comp.setCajeroId(cajeroId);
+        comp.setArqueoCajaId(arqueo.getId());
+        comp.setTipoComprobanteId(tipo);
+        comp.setSerie(serie.getSerie());
+        comp.setNumero(numero);
+        comp.setDatosComprobanteId(datosId);
+        comp.setSubtotal(subtotal);
+        comp.setIgv(igv);
+        comp.setDescuento(descuento);
+        comp.setMotivoDescuento(limpiar(request.motivoDescuento()));
+        comp.setTotal(total);
+        comp.setMetodoPago(metodoPago);
+        comp.setEfectivoRecibido(efectivoRecibido);
+        comp.setVuelto(vuelto);
+        ComprobanteEntity saved = comprobanteRepo.save(comp);
+        Map<String, Object> comprobanteAntes = snapshotComprobante(saved);
+
+        saved.setEstado(ComprobanteEntity.EstadoComprobante.COMPLETADO);
+        saved.setPagadoEn(LocalDateTime.now());
+        saved.setActualizadoEn(LocalDateTime.now());
+        saved = comprobanteRepo.saveAndFlush(saved);
+        registrarAuditoriaComprobante(saved, comprobanteAntes, auditoriaContexto);
+
+        PedidoEntity.EstadoPedido estadoPedidoAnterior = pedido.getEstado();
+        pedido.setEstado(PedidoEntity.EstadoPedido.COBRADO);
+        pedidoRepo.save(pedido);
+        auditoriaGlobalService.registrar(
+                "caja",
+                "pedido",
+                pedido.getId().toString(),
+                "CAMBIO_ESTADO",
+                "El pedido paso de " + estadoPedidoAnterior.name() + " a " + pedido.getEstado().name()
+                        + " durante la emision del comprobante",
+                snapshotPedidoEstado(pedido.getId(), estadoPedidoAnterior),
+                snapshotPedidoEstado(pedido.getId(), pedido.getEstado()),
+                auditoriaContexto
+        );
+        if (pedido.getSesionMesaId() != null) {
+            programarLiberacionMesa(pedido.getSesionMesaId(), request.pedidoId());
+        }
+
+        return new ComprobanteResponseDTO(
+                saved.getId(), saved.getPedidoId(),
+                saved.getTipoComprobanteId(), saved.getSerie(), saved.getNumero(),
+                saved.getMetodoPago().name(), nombreTipoComprobante(saved.getTipoComprobanteId()),
+                subtotal, igv, descuento, total,
+                saved.getEfectivoRecibido(), saved.getVuelto(),
+                saved.getEstado().name(), saved.getPagadoEn()
+        );
     }
 
     public byte[] generarEscPos(Long comprobanteId) {
@@ -312,7 +336,7 @@ public class CajaService {
         }
     }
 
-    private Long guardarDatosSiCorresponde(String tipo, DatosComprobanteRequest request) {
+    private DatosComprobanteEntity guardarDatosSiCorresponde(String tipo, DatosComprobanteRequest request) {
         if (!"B".equals(tipo) && !"F".equals(tipo)) return null;
         if (request == null) return null;
 
@@ -321,7 +345,7 @@ public class CajaService {
         datos.setRucDni(limpiar(request.rucDni()));
         datos.setRazonSocial(limpiar(request.razonSocial()));
         datos.setDireccion(limpiar(request.direccion()));
-        return datosRepo.save(datos).getId();
+        return datosRepo.save(datos);
     }
 
     private Object[] cargarTotales(Long pedidoId) {
@@ -413,13 +437,77 @@ public class CajaService {
         return value == null ? null : value.trim();
     }
 
-    private String resumirRequest(EmitirComprobanteRequest request) {
-        if (request == null) return "request=null";
-        return "pedidoId=" + request.pedidoId()
-                + ", tipo=" + limpiar(request.tipoComprobanteId())
-                + ", metodo=" + limpiar(request.metodoPago())
-                + ", descuento=" + request.descuento()
-                + ", doc=" + (request.datosComprobante() != null ? limpiar(request.datosComprobante().rucDni()) : null);
+    private void registrarAuditoriaComprobante(ComprobanteEntity comprobante,
+                                               Map<String, Object> comprobanteAntes,
+                                               AuditoriaContexto auditoriaContexto) {
+        String accion = comprobante.getEstado() == ComprobanteEntity.EstadoComprobante.COMPLETADO
+                ? "COMPLETAR"
+                : "CREAR";
+        Object valorAnterior = "COMPLETAR".equals(accion) ? comprobanteAntes : null;
+        String descripcion = "COMPLETAR".equals(accion)
+                ? "Se completo el comprobante del pedido " + comprobante.getPedidoId()
+                : "Se creo el comprobante del pedido " + comprobante.getPedidoId();
+
+        auditoriaGlobalService.registrar(
+                "caja",
+                "comprobante_venta",
+                comprobante.getId().toString(),
+                accion,
+                descripcion,
+                valorAnterior,
+                snapshotComprobante(comprobante),
+                auditoriaContexto
+        );
+    }
+
+    private Map<String, Object> snapshotDatosComprobante(DatosComprobanteEntity datosComprobante) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("id", datosComprobante.getId());
+        snapshot.put("tipoComprobanteId", datosComprobante.getTipoComprobanteId());
+        snapshot.put("rucDni", datosComprobante.getRucDni());
+        snapshot.put("razonSocial", datosComprobante.getRazonSocial());
+        snapshot.put("direccion", datosComprobante.getDireccion());
+        return snapshot;
+    }
+
+    private Map<String, Object> snapshotSerieComprobante(SerieComprobanteEntity serie) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("id", serie.getId());
+        snapshot.put("tipo", serie.getTipo());
+        snapshot.put("serie", serie.getSerie());
+        snapshot.put("correlativoActual", serie.getCorrelativoActual());
+        snapshot.put("activo", serie.isActivo());
+        return snapshot;
+    }
+
+    private Map<String, Object> snapshotComprobante(ComprobanteEntity comprobante) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("id", comprobante.getId());
+        snapshot.put("pedidoId", comprobante.getPedidoId());
+        snapshot.put("cajeroId", comprobante.getCajeroId());
+        snapshot.put("arqueoCajaId", comprobante.getArqueoCajaId());
+        snapshot.put("tipoComprobanteId", comprobante.getTipoComprobanteId());
+        snapshot.put("serie", comprobante.getSerie());
+        snapshot.put("numero", comprobante.getNumero());
+        snapshot.put("datosComprobanteId", comprobante.getDatosComprobanteId());
+        snapshot.put("subtotal", comprobante.getSubtotal());
+        snapshot.put("igv", comprobante.getIgv());
+        snapshot.put("descuento", comprobante.getDescuento());
+        snapshot.put("motivoDescuento", comprobante.getMotivoDescuento());
+        snapshot.put("total", comprobante.getTotal());
+        snapshot.put("metodoPago", comprobante.getMetodoPago() != null ? comprobante.getMetodoPago().name() : null);
+        snapshot.put("efectivoRecibido", comprobante.getEfectivoRecibido());
+        snapshot.put("vuelto", comprobante.getVuelto());
+        snapshot.put("estado", comprobante.getEstado() != null ? comprobante.getEstado().name() : null);
+        snapshot.put("pagadoEn", comprobante.getPagadoEn());
+        return snapshot;
+    }
+
+    private Map<String, Object> snapshotPedidoEstado(Long pedidoId, PedidoEntity.EstadoPedido estado) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("id", pedidoId);
+        snapshot.put("estado", estado != null ? estado.name() : null);
+        return snapshot;
     }
 
     private void programarLiberacionMesa(Long sesionMesaId, Long pedidoId) {

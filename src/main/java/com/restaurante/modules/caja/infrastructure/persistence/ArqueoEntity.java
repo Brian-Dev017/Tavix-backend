@@ -51,7 +51,7 @@ public class ArqueoEntity {
     @Column
     private String notas;
 
-    @Transient
+    @Column(name = "total_redondeo", precision = 10, scale = 2)
     private BigDecimal totalRedondeo = BigDecimal.ZERO;
 
     public enum EstadoArqueo { ABIERTO, CERRADO }

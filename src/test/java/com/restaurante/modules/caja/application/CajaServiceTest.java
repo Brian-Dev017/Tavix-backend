@@ -8,7 +8,9 @@ import com.restaurante.modules.caja.infrastructure.persistence.DatosComprobanteJ
 import com.restaurante.modules.caja.infrastructure.web.dto.EmitirComprobanteRequest;
 import com.restaurante.modules.configuracion.infrastructure.persistence.SerieComprobanteEntity;
 import com.restaurante.modules.configuracion.infrastructure.persistence.SerieComprobanteJpaRepo;
+import com.restaurante.modules.configuracion.infrastructure.persistence.NegocioConfigJpaRepo;
 import com.restaurante.modules.catalogo.infrastructure.persistence.ProductoJpaRepo;
+import com.restaurante.modules.mesas.application.MesaService;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoEntity;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoJpaRepo;
 import com.restaurante.modules.pedidos.infrastructure.persistence.DetallePedidoJpaRepo;
@@ -44,6 +46,8 @@ class CajaServiceTest {
     @Mock private SerieComprobanteJpaRepo serieRepo;
     @Mock private DetallePedidoJpaRepo detalleRepo;
     @Mock private ProductoJpaRepo productoRepo;
+    @Mock private MesaService mesaService;
+    @Mock private NegocioConfigJpaRepo negocioRepo;
     @Mock private EntityManager entityManager;
     @Mock private Query query;
 
@@ -52,7 +56,7 @@ class CajaServiceTest {
     @BeforeEach
     void setUp() {
         service = new CajaService(comprobanteRepo, arqueoRepo, datosRepo, pedidoRepo, serieRepo,
-                detalleRepo, productoRepo);
+                detalleRepo, productoRepo, mesaService, negocioRepo);
         ReflectionTestUtils.setField(service, "em", entityManager);
     }
 

@@ -12,6 +12,8 @@ import com.restaurante.modules.pedidos.infrastructure.web.dto.CrearPedidoRequest
 import com.restaurante.modules.pedidos.infrastructure.web.dto.ItemCocinaDTO;
 import com.restaurante.modules.pedidos.infrastructure.web.dto.ItemPedidoDTO;
 import com.restaurante.modules.pedidos.infrastructure.ws.PedidoEventPublisher;
+import com.restaurante.shared.audit.AuditoriaContexto;
+import com.restaurante.shared.audit.AuditoriaGlobalService;
 import com.restaurante.shared.exception.BusinessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -19,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class PedidoService {
@@ -29,20 +32,23 @@ public class PedidoService {
     private final MesaJpaRepo mesaRepo;
     private final ProductoJpaRepo productoRepo;
     private final PedidoEventPublisher eventPublisher;
+    private final AuditoriaGlobalService auditoriaGlobalService;
 
     public PedidoService(PedidoJpaRepo pedidoRepo, DetallePedidoJpaRepo detalleRepo,
                          SesionMesaJpaRepo sesionRepo, MesaJpaRepo mesaRepo,
-                         ProductoJpaRepo productoRepo, PedidoEventPublisher eventPublisher) {
+                         ProductoJpaRepo productoRepo, PedidoEventPublisher eventPublisher,
+                         AuditoriaGlobalService auditoriaGlobalService) {
         this.pedidoRepo = pedidoRepo;
         this.detalleRepo = detalleRepo;
         this.sesionRepo = sesionRepo;
         this.mesaRepo = mesaRepo;
         this.productoRepo = productoRepo;
         this.eventPublisher = eventPublisher;
+        this.auditoriaGlobalService = auditoriaGlobalService;
     }
 
     @Transactional
-    public Long crearPedido(CrearPedidoRequest request, Long usuarioId, boolean admin) {
+    public Long crearPedido(CrearPedidoRequest request, Long usuarioId, boolean admin, AuditoriaContexto contexto) {
         var sesion = sesionRepo.findById(request.sesionMesaId())
                 .orElseThrow(() -> new BusinessException("Sesion de mesa no encontrada", HttpStatus.NOT_FOUND));
         if (sesion.getCerradaEn() != null) {
@@ -60,12 +66,24 @@ public class PedidoService {
                 .orElseGet(() -> {
                     PedidoEntity pedido = new PedidoEntity();
                     pedido.setSesionMesaId(request.sesionMesaId());
-                    return pedidoRepo.save(pedido).getId();
+                    PedidoEntity saved = pedidoRepo.save(pedido);
+                    auditoriaGlobalService.registrar(
+                            "pedidos",
+                            "pedido",
+                            saved.getId().toString(),
+                            "CREAR",
+                            "Creacion de pedido",
+                            null,
+                            saved,
+                            contexto
+                    );
+                    return saved.getId();
                 });
     }
 
     @Transactional
-    public ItemPedidoDTO agregarItem(Long pedidoId, AgregarItemRequest request, Long usuarioId, boolean admin) {
+    public ItemPedidoDTO agregarItem(Long pedidoId, AgregarItemRequest request, Long usuarioId, boolean admin,
+                                     AuditoriaContexto contexto) {
         PedidoEntity pedido = pedidoRepo.findById(pedidoId)
                 .orElseThrow(() -> new BusinessException("Pedido no encontrado", HttpStatus.NOT_FOUND));
         var sesion = sesionRepo.findById(pedido.getSesionMesaId())
@@ -97,10 +115,31 @@ public class PedidoService {
         detalle.setPrecioUnitario(producto.getPrecio());
         detalle.setObservaciones(request.observaciones());
         DetallePedidoEntity saved = detalleRepo.save(detalle);
+        auditoriaGlobalService.registrar(
+                "pedidos",
+                "detalle_pedido",
+                saved.getId().toString(),
+                "CREAR",
+                "Creacion de item en pedido",
+                null,
+                saved,
+                contexto
+        );
 
         if (pedido.getEstado() == PedidoEntity.EstadoPedido.ABIERTO) {
+            PedidoEntity.EstadoPedido estadoAnterior = pedido.getEstado();
             pedido.setEstado(PedidoEntity.EstadoPedido.EN_COCINA);
-            pedidoRepo.save(pedido);
+            PedidoEntity updated = pedidoRepo.save(pedido);
+            auditoriaGlobalService.registrar(
+                    "pedidos",
+                    "pedido",
+                    updated.getId().toString(),
+                    "CAMBIO_ESTADO",
+                    "Cambio de estado de pedido",
+                    Map.of("estado", estadoAnterior.name()),
+                    Map.of("estado", updated.getEstado().name()),
+                    contexto
+            );
         }
 
         String numeroMesa = sesionRepo.findById(pedido.getSesionMesaId())
