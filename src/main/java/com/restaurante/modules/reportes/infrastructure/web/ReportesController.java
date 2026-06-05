@@ -2,7 +2,11 @@ package com.restaurante.modules.reportes.infrastructure.web;
 
 import com.restaurante.modules.caja.infrastructure.persistence.ComprobanteEntity;
 import com.restaurante.modules.caja.infrastructure.persistence.ComprobanteJpaRepo;
+import com.restaurante.modules.caja.infrastructure.persistence.DatosComprobanteEntity;
+import com.restaurante.modules.caja.infrastructure.persistence.DatosComprobanteJpaRepo;
 import com.restaurante.modules.catalogo.infrastructure.persistence.ProductoJpaRepo;
+import com.restaurante.modules.configuracion.infrastructure.persistence.NegocioConfigEntity;
+import com.restaurante.modules.configuracion.infrastructure.persistence.NegocioConfigJpaRepo;
 import com.restaurante.modules.pedidos.infrastructure.persistence.DetallePedidoEntity;
 import com.restaurante.modules.pedidos.infrastructure.persistence.DetallePedidoJpaRepo;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoEntity;
@@ -32,15 +36,21 @@ public class ReportesController {
     private final PedidoJpaRepo pedidoRepo;
     private final DetallePedidoJpaRepo detallePedidoRepo;
     private final ProductoJpaRepo productoRepo;
+    private final DatosComprobanteJpaRepo datosComprobanteRepo;
+    private final NegocioConfigJpaRepo negocioConfigRepo;
 
     public ReportesController(ComprobanteJpaRepo comprobanteRepo,
                                PedidoJpaRepo pedidoRepo,
                                DetallePedidoJpaRepo detallePedidoRepo,
-                               ProductoJpaRepo productoRepo) {
+                               ProductoJpaRepo productoRepo,
+                               DatosComprobanteJpaRepo datosComprobanteRepo,
+                               NegocioConfigJpaRepo negocioConfigRepo) {
         this.comprobanteRepo = comprobanteRepo;
         this.pedidoRepo = pedidoRepo;
         this.detallePedidoRepo = detallePedidoRepo;
         this.productoRepo = productoRepo;
+        this.datosComprobanteRepo = datosComprobanteRepo;
+        this.negocioConfigRepo = negocioConfigRepo;
     }
 
     // ──────────────── DTOs ────────────────
@@ -86,7 +96,16 @@ public class ReportesController {
             BigDecimal igv,
             BigDecimal descuento,
             BigDecimal total,
+            BigDecimal efectivoRecibido,
+            BigDecimal vuelto,
             LocalDateTime pagadoEn,
+            String clienteDocumento,
+            String clienteNombre,
+            String clienteDireccion,
+            String negocioNombre,
+            String negocioRuc,
+            String negocioDireccion,
+            String negocioLogoUrl,
             List<ItemDetalleReporte> items
     ) {}
 
@@ -276,6 +295,10 @@ public class ReportesController {
         ComprobanteEntity comp = comprobanteRepo.findById(comprobanteId)
                 .orElseThrow(() -> new com.restaurante.shared.exception.BusinessException(
                         "Comprobante no encontrado", org.springframework.http.HttpStatus.NOT_FOUND));
+        DatosComprobanteEntity datos = comp.getDatosComprobanteId() == null
+                ? null
+                : datosComprobanteRepo.findById(comp.getDatosComprobanteId()).orElse(null);
+        NegocioConfigEntity negocio = negocioConfigRepo.findById(1L).orElse(null);
         List<ItemDetalleReporte> items = detallePedidoRepo.findByPedidoId(comp.getPedidoId()).stream()
                 .map(d -> {
                     String nombre = productoRepo.findById(d.getProductoId())
@@ -289,7 +312,16 @@ public class ReportesController {
         return ResponseEntity.ok(ApiResponse.ok(new PedidoDetalleReporte(
                 comp.getId(), comp.getPedidoId(), nombreTipoComprobante(comp.getTipoComprobanteId()),
                 comp.getSerie(), comp.getNumero(), comp.getMetodoPago().name(), comp.getSubtotal(),
-                comp.getIgv(), comp.getDescuento(), comp.getTotal(), comp.getPagadoEn(), items
+                comp.getIgv(), comp.getDescuento(), comp.getTotal(),
+                comp.getEfectivoRecibido(), comp.getVuelto(), comp.getPagadoEn(),
+                datos != null ? datos.getRucDni() : null,
+                datos != null ? datos.getRazonSocial() : null,
+                datos != null ? datos.getDireccion() : null,
+                negocio != null ? negocio.getNombreComercial() : null,
+                negocio != null ? negocio.getRucNegocio() : null,
+                negocio != null ? negocio.getDireccion() : null,
+                negocio != null ? negocio.getLogoUrl() : null,
+                items
         )));
     }
 

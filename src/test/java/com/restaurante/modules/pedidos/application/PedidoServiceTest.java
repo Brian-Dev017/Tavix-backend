@@ -11,6 +11,8 @@ import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoEntity;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoJpaRepo;
 import com.restaurante.modules.pedidos.infrastructure.web.dto.AgregarItemRequest;
 import com.restaurante.modules.pedidos.infrastructure.ws.PedidoEventPublisher;
+import com.restaurante.shared.audit.AuditoriaContexto;
+import com.restaurante.shared.audit.AuditoriaGlobalService;
 import com.restaurante.shared.exception.BusinessException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -38,12 +40,18 @@ class PedidoServiceTest {
     @Mock private MesaJpaRepo mesaRepo;
     @Mock private ProductoJpaRepo productoRepo;
     @Mock private PedidoEventPublisher eventPublisher;
+    @Mock private AuditoriaGlobalService auditoriaGlobalService;
 
     private PedidoService service;
+    private AuditoriaContexto contexto;
 
     @BeforeEach
     void setUp() {
-        service = new PedidoService(pedidoRepo, detalleRepo, sesionRepo, mesaRepo, productoRepo, eventPublisher);
+        service = new PedidoService(
+                pedidoRepo, detalleRepo, sesionRepo, mesaRepo, productoRepo,
+                eventPublisher, auditoriaGlobalService
+        );
+        contexto = new AuditoriaContexto(1L, "test", "MS", "127.0.0.1", "/test");
     }
 
     @Test
@@ -61,7 +69,7 @@ class PedidoServiceTest {
         when(productoRepo.findById(11L)).thenReturn(Optional.of(producto));
         when(detalleRepo.save(any(DetallePedidoEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        service.agregarItem(3L, new AgregarItemRequest(11L, 2, "sin cebolla"), 1L, true);
+        service.agregarItem(3L, new AgregarItemRequest(11L, 2, "sin cebolla"), 1L, true, contexto);
 
         assertEquals(PedidoEntity.EstadoPedido.EN_COCINA, pedido.getEstado());
         verify(pedidoRepo).save(pedido);
@@ -81,7 +89,7 @@ class PedidoServiceTest {
         when(productoRepo.findById(11L)).thenReturn(Optional.of(producto));
 
         BusinessException exception = assertThrows(BusinessException.class,
-                () -> service.agregarItem(3L, new AgregarItemRequest(11L, 1, null), 1L, true));
+                () -> service.agregarItem(3L, new AgregarItemRequest(11L, 1, null), 1L, true, contexto));
 
         assertEquals(HttpStatus.CONFLICT, exception.getStatus());
         assertEquals("Producto no disponible", exception.getMessage());

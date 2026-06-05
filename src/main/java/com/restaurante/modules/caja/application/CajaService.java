@@ -35,8 +35,11 @@ import java.nio.charset.StandardCharsets;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Optional;
 import java.util.Map;
 import java.util.Set;
 
@@ -44,6 +47,9 @@ import java.util.Set;
 public class CajaService {
 
     private static final Set<String> TIPOS_COMPROBANTE = Set.of("T", "B", "F");
+    private static final int TICKET_WIDTH = 42;
+    private static final DateTimeFormatter TICKET_DATE_FORMAT =
+            DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss");
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(CajaService.class);
 
     @PersistenceContext
@@ -240,37 +246,15 @@ public class CajaService {
         ComprobanteEntity comp = comprobanteRepo.findById(comprobanteId)
                 .orElseThrow(() -> new BusinessException("Comprobante no encontrado", HttpStatus.NOT_FOUND));
         NegocioConfigEntity negocio = negocioRepo.findById(1L).orElse(null);
-        String nombreNegocio = negocio != null && !estaVacio(negocio.getNombreComercial())
-                ? limpiar(negocio.getNombreComercial())
-                : "LA FLOR DEL TUMBO";
-        String rucNegocio = negocio != null && !estaVacio(negocio.getRucNegocio())
-                ? limpiar(negocio.getRucNegocio())
-                : null;
-        String direccionNegocio = negocio != null && !estaVacio(negocio.getDireccion())
-                ? limpiar(negocio.getDireccion())
-                : null;
-
-        String serieNumero = comp.getSerie() + "-" + String.format("%08d", comp.getNumero());
-        String ticket = "\u001B@"
-                + nombreNegocio + "\n"
-                + (rucNegocio != null ? "RUC: " + rucNegocio + "\n" : "")
-                + (direccionNegocio != null ? direccionNegocio + "\n" : "")
-                + "COMPROBANTE " + serieNumero + "\n"
-                + "TIPO: " + nombreTipoComprobante(comp.getTipoComprobanteId()) + "\n"
-                + "PAGO: " + comp.getMetodoPago().name() + "\n"
-                + "------------------------------\n"
-                + "SUBTOTAL: S/ " + comp.getSubtotal() + "\n"
-                + "IGV 18%:  S/ " + comp.getIgv() + "\n"
-                + "DSCTO:    S/ " + comp.getDescuento() + "\n"
-                + "TOTAL:    S/ " + comp.getTotal() + "\n"
-                + (comp.getMetodoPago() == ComprobanteEntity.MetodoPago.EFECTIVO
-                    ? "RECIBIDO: S/ " + comp.getEfectivoRecibido() + "\n"
-                    + "VUELTO:   S/ " + comp.getVuelto() + "\n"
-                    : "")
-                + "------------------------------\n"
-                + "Gracias por su visita\n\n\n"
-                + "\u001DV\u0001";
-        return ticket.getBytes(StandardCharsets.ISO_8859_1);
+        DatosComprobanteEntity datos = comp.getDatosComprobanteId() == null
+                ? null
+                : datosRepo.findById(comp.getDatosComprobanteId()).orElse(null);
+        List<ItemPedidoDTO> items = cargarItems(comp.getPedidoId());
+        List<String> lines = "T".equals(comp.getTipoComprobanteId())
+                ? construirTicketVenta(comp, negocio, items)
+                : construirBoletaFactura(comp, negocio, datos, items);
+        String payload = "\u001B@" + String.join("\n", lines) + "\n\n\n\u001DV\u0001";
+        return payload.getBytes(StandardCharsets.ISO_8859_1);
     }
 
     private List<ItemPedidoDTO> cargarItems(Long pedidoId) {
@@ -410,6 +394,163 @@ public class CajaService {
             case "F" -> "Factura";
             default -> "Ticket";
         };
+    }
+
+    private List<String> construirTicketVenta(ComprobanteEntity comp,
+                                              NegocioConfigEntity negocio,
+                                              List<ItemPedidoDTO> items) {
+        List<String> lines = new ArrayList<>();
+        lines.add(center(nombreNegocio(negocio).toUpperCase()));
+        Optional.ofNullable(rucNegocio(negocio)).ifPresent(ruc -> lines.add(center("RUC: " + ruc)));
+        lines.add("");
+        lines.add(center("Ticket de venta #" + comp.getNumero()));
+        lines.add("");
+        lines.add(center(formatFecha(comp.getPagadoEn())));
+        lines.add(center("Lo atendio: Cajero #" + comp.getCajeroId()));
+        lines.add(center("Cliente: Mostrador"));
+        lines.add("");
+        lines.add(center(repeat("-", 24)));
+        lines.add(center("Impresora termica 80mm"));
+        agregarItemsTicket(lines, items);
+        lines.add(center(repeat("-", 24)));
+        lines.add(row("Total", money(comp.getTotal())));
+        if (comp.getMetodoPago() == ComprobanteEntity.MetodoPago.EFECTIVO) {
+            lines.add(row("Su pago", money(comp.getEfectivoRecibido())));
+            lines.add(row("Cambio", money(comp.getVuelto())));
+        } else {
+            lines.add(row("Pago", comp.getMetodoPago().name()));
+        }
+        lines.add("");
+        lines.add(center("Gracias por su visita"));
+        return lines;
+    }
+
+    private List<String> construirBoletaFactura(ComprobanteEntity comp,
+                                                NegocioConfigEntity negocio,
+                                                DatosComprobanteEntity datos,
+                                                List<ItemPedidoDTO> items) {
+        List<String> lines = new ArrayList<>();
+        lines.add(center(nombreNegocio(negocio).toUpperCase()));
+        Optional.ofNullable(rucNegocio(negocio)).ifPresent(ruc -> lines.add(center("RUC: " + ruc)));
+        Optional.ofNullable(direccionNegocio(negocio)).ifPresent(dir -> wrap(dir, TICKET_WIDTH).forEach(lines::add));
+        lines.add(repeat("*", TICKET_WIDTH));
+        lines.add(center(nombreTipoComprobante(comp.getTipoComprobanteId()).toUpperCase()));
+        lines.add(center(comp.getSerie() + "-" + String.format("%08d", comp.getNumero())));
+        lines.add(row("Fecha", formatFecha(comp.getPagadoEn())));
+        lines.add(row("Pedido", "P-" + comp.getPedidoId()));
+        lines.add(row("Cajero", "#" + comp.getCajeroId()));
+        lines.add(repeat("-", TICKET_WIDTH));
+        if (datos != null) {
+            lines.add(row("Doc.", safe(datos.getRucDni())));
+            wrap("Cliente: " + safe(datos.getRazonSocial()), TICKET_WIDTH).forEach(lines::add);
+            if (!estaVacio(datos.getDireccion())) {
+                wrap("Direccion: " + safe(datos.getDireccion()), TICKET_WIDTH).forEach(lines::add);
+            }
+            lines.add(repeat("-", TICKET_WIDTH));
+        }
+        lines.add(row("DESCRIPCION", "IMPORTE"));
+        agregarItemsTicket(lines, items);
+        lines.add(repeat("=", TICKET_WIDTH));
+        lines.add(row("SUBTOTAL", money(comp.getSubtotal())));
+        lines.add(row("IGV 18%", money(comp.getIgv())));
+        if (comp.getDescuento() != null && comp.getDescuento().signum() > 0) {
+            lines.add(row("DESCUENTO", "-" + money(comp.getDescuento())));
+        }
+        lines.add(row("TOTAL A PAGAR", money(comp.getTotal())));
+        lines.add(repeat("=", TICKET_WIDTH));
+        lines.add(row("METODO", comp.getMetodoPago().name()));
+        if (comp.getMetodoPago() == ComprobanteEntity.MetodoPago.EFECTIVO) {
+            lines.add(row("RECIBIDO", money(comp.getEfectivoRecibido())));
+            lines.add(row("VUELTO", money(comp.getVuelto())));
+        }
+        lines.add("");
+        lines.add(center("Representacion impresa"));
+        lines.add(center("Gracias por su compra"));
+        return lines;
+    }
+
+    private void agregarItemsTicket(List<String> lines, List<ItemPedidoDTO> items) {
+        for (ItemPedidoDTO item : items) {
+            wrap(item.productoNombre(), TICKET_WIDTH).forEach(lines::add);
+            String cantidadPrecio = item.cantidad() + " x " + money(item.precio());
+            lines.add(row(cantidadPrecio, money(item.subtotal())));
+            if (!estaVacio(item.observaciones())) {
+                wrap("Obs: " + item.observaciones(), TICKET_WIDTH).forEach(line -> lines.add("  " + line.trim()));
+            }
+            lines.add(repeat("-", TICKET_WIDTH));
+        }
+    }
+
+    private String nombreNegocio(NegocioConfigEntity negocio) {
+        return negocio != null && !estaVacio(negocio.getNombreComercial())
+                ? limpiar(negocio.getNombreComercial())
+                : "LA FLOR DEL TUMBO";
+    }
+
+    private String rucNegocio(NegocioConfigEntity negocio) {
+        return negocio != null && !estaVacio(negocio.getRucNegocio()) ? limpiar(negocio.getRucNegocio()) : null;
+    }
+
+    private String direccionNegocio(NegocioConfigEntity negocio) {
+        return negocio != null && !estaVacio(negocio.getDireccion()) ? limpiar(negocio.getDireccion()) : null;
+    }
+
+    private String formatFecha(LocalDateTime value) {
+        return value == null ? "--" : value.format(TICKET_DATE_FORMAT);
+    }
+
+    private String money(BigDecimal value) {
+        return "S/ " + (value == null ? BigDecimal.ZERO : value).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private String row(String left, String right) {
+        String l = safe(left);
+        String r = safe(right);
+        int available = Math.max(1, TICKET_WIDTH - r.length());
+        if (l.length() > available) {
+            l = l.substring(0, available);
+        }
+        return l + repeat(" ", Math.max(1, TICKET_WIDTH - l.length() - r.length())) + r;
+    }
+
+    private String center(String value) {
+        String text = safe(value);
+        if (text.length() >= TICKET_WIDTH) {
+            return text.substring(0, TICKET_WIDTH);
+        }
+        int left = (TICKET_WIDTH - text.length()) / 2;
+        return repeat(" ", left) + text;
+    }
+
+    private List<String> wrap(String value, int width) {
+        String clean = safe(value);
+        if (clean.isBlank()) {
+            return List.of("");
+        }
+        List<String> lines = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        for (String word : clean.split("\\s+")) {
+            if (current.length() == 0) {
+                current.append(word);
+            } else if (current.length() + 1 + word.length() <= width) {
+                current.append(' ').append(word);
+            } else {
+                lines.add(current.toString());
+                current = new StringBuilder(word);
+            }
+        }
+        if (current.length() > 0) {
+            lines.add(current.toString());
+        }
+        return lines;
+    }
+
+    private String repeat(String value, int count) {
+        return value.repeat(Math.max(0, count));
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value.trim().replaceAll("\\s+", " ");
     }
 
     private boolean tieneDescuento(BigDecimal descuento) {
