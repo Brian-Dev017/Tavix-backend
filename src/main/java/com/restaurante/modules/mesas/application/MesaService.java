@@ -35,6 +35,7 @@ public class MesaService {
 
     public List<MesaDTO> listarMesas() {
         return mesaRepo.findAllByOrderByNumeroAsc().stream()
+                .filter(m -> !m.isParaLlevar())
                 .map(m -> {
                     Optional<SesionMesaEntity> sesionActiva =
                             sesionRepo.findByMesaIdAndCerradaEnIsNull(m.getId());
@@ -54,6 +55,10 @@ public class MesaService {
         MesaEntity mesa = mesaRepo.findById(mesaId)
                 .orElseThrow(() -> new BusinessException("Mesa no encontrada", HttpStatus.NOT_FOUND));
 
+        if (mesa.isParaLlevar()) {
+            throw new BusinessException("La mesa para llevar solo puede ser usada por caja", HttpStatus.FORBIDDEN);
+        }
+
         if (mesa.getEstado() != MesaEntity.EstadoMesa.DISPONIBLE) {
             throw new BusinessException("La mesa no está disponible", HttpStatus.CONFLICT);
         }
@@ -69,6 +74,31 @@ public class MesaService {
 
         mesa.setEstado(MesaEntity.EstadoMesa.OCUPADA);
         mesaRepo.save(mesa);
+
+        return sesion.getId();
+    }
+
+    @Transactional
+    public Long abrirSesionParaLlevar(Long cajeroId) {
+        MesaEntity mesa = mesaRepo.findFirstByTipo(MesaEntity.TipoMesa.PARA_LLEVAR)
+                .orElseGet(() -> {
+                    MesaEntity nueva = new MesaEntity();
+                    nueva.setNumero("Para llevar");
+                    nueva.setCapacidad(1);
+                    nueva.setEstado(MesaEntity.EstadoMesa.DISPONIBLE);
+                    nueva.setTipo(MesaEntity.TipoMesa.PARA_LLEVAR);
+                    return mesaRepo.save(nueva);
+                });
+
+        SesionMesaEntity sesion = new SesionMesaEntity();
+        sesion.setMesaId(mesa.getId());
+        sesion.setMeseroId(cajeroId);
+        sesionRepo.save(sesion);
+
+        if (mesa.getEstado() != MesaEntity.EstadoMesa.DISPONIBLE) {
+            mesa.setEstado(MesaEntity.EstadoMesa.DISPONIBLE);
+            mesaRepo.save(mesa);
+        }
 
         return sesion.getId();
     }

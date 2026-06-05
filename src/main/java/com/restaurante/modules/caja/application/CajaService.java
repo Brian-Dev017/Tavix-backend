@@ -16,10 +16,16 @@ import com.restaurante.modules.configuracion.infrastructure.persistence.NegocioC
 import com.restaurante.modules.configuracion.infrastructure.persistence.NegocioConfigEntity;
 import com.restaurante.modules.catalogo.infrastructure.persistence.ProductoJpaRepo;
 import com.restaurante.modules.mesas.application.MesaService;
+import com.restaurante.modules.mesas.infrastructure.persistence.MesaEntity;
+import com.restaurante.modules.mesas.infrastructure.persistence.MesaJpaRepo;
+import com.restaurante.modules.mesas.infrastructure.persistence.SesionMesaJpaRepo;
+import com.restaurante.modules.pedidos.infrastructure.persistence.DetallePedidoEntity;
 import com.restaurante.modules.pedidos.infrastructure.persistence.DetallePedidoJpaRepo;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoEntity;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoJpaRepo;
+import com.restaurante.modules.pedidos.infrastructure.web.dto.ItemCocinaDTO;
 import com.restaurante.modules.pedidos.infrastructure.web.dto.ItemPedidoDTO;
+import com.restaurante.modules.pedidos.infrastructure.ws.PedidoEventPublisher;
 import com.restaurante.shared.audit.AuditoriaContexto;
 import com.restaurante.shared.audit.AuditoriaGlobalService;
 import com.restaurante.shared.exception.BusinessException;
@@ -63,6 +69,9 @@ public class CajaService {
     private final DetallePedidoJpaRepo detalleRepo;
     private final ProductoJpaRepo productoRepo;
     private final MesaService mesaService;
+    private final SesionMesaJpaRepo sesionRepo;
+    private final MesaJpaRepo mesaRepo;
+    private final PedidoEventPublisher eventPublisher;
     private final NegocioConfigJpaRepo negocioRepo;
     private final AuditoriaGlobalService auditoriaGlobalService;
 
@@ -74,6 +83,9 @@ public class CajaService {
                        DetallePedidoJpaRepo detalleRepo,
                        ProductoJpaRepo productoRepo,
                        MesaService mesaService,
+                       SesionMesaJpaRepo sesionRepo,
+                       MesaJpaRepo mesaRepo,
+                       PedidoEventPublisher eventPublisher,
                        NegocioConfigJpaRepo negocioRepo,
                        AuditoriaGlobalService auditoriaGlobalService) {
         this.comprobanteRepo = comprobanteRepo;
@@ -84,6 +96,9 @@ public class CajaService {
         this.detalleRepo = detalleRepo;
         this.productoRepo = productoRepo;
         this.mesaService = mesaService;
+        this.sesionRepo = sesionRepo;
+        this.mesaRepo = mesaRepo;
+        this.eventPublisher = eventPublisher;
         this.negocioRepo = negocioRepo;
         this.auditoriaGlobalService = auditoriaGlobalService;
     }
@@ -91,12 +106,14 @@ public class CajaService {
     @SuppressWarnings("unchecked")
     public List<PedidoResumenDTO> getPedidosActivos() {
         List<Object[]> rows = em.createNativeQuery(
-                "SELECT pedido_id, mesa, mesero, total_items, subtotal, igv, total_con_igv, estado_pedido " +
-                "FROM v_consumo_por_pedido " +
-                "WHERE estado_pedido IN ('ABIERTO','EN_COCINA','LISTO') " +
-                "AND total_items > 0 " +
-                "AND total_con_igv > 0 " +
-                "ORDER BY pedido_id ASC"
+                "SELECT v.pedido_id, v.mesa, v.mesero, v.total_items, v.subtotal, v.igv, " +
+                "v.total_con_igv, v.estado_pedido " +
+                "FROM v_consumo_por_pedido v " +
+                "WHERE v.estado_pedido IN ('ABIERTO','EN_COCINA','LISTO') " +
+                "AND v.total_items > 0 " +
+                "AND v.total_con_igv > 0 " +
+                "AND NOT EXISTS (SELECT 1 FROM comprobante_venta cv WHERE cv.pedido_id = v.pedido_id) " +
+                "ORDER BY v.pedido_id ASC"
         ).getResultList();
 
         return rows.stream().map(r -> new PedidoResumenDTO(
@@ -132,8 +149,14 @@ public class CajaService {
                 || pedido.getEstado() == PedidoEntity.EstadoPedido.CANCELADO) {
             throw new BusinessException("El pedido ya fue cerrado", HttpStatus.BAD_REQUEST);
         }
-        if (pedido.getEstado() != PedidoEntity.EstadoPedido.LISTO) {
+        boolean pedidoParaLlevar = esPedidoParaLlevar(pedido);
+        if (!pedidoParaLlevar && pedido.getEstado() != PedidoEntity.EstadoPedido.LISTO) {
             throw new BusinessException("Solo se puede cobrar un pedido LISTO", HttpStatus.CONFLICT);
+        }
+        if (pedidoParaLlevar && pedido.getEstado() != PedidoEntity.EstadoPedido.ABIERTO
+                && pedido.getEstado() != PedidoEntity.EstadoPedido.EN_COCINA
+                && pedido.getEstado() != PedidoEntity.EstadoPedido.LISTO) {
+            throw new BusinessException("El pedido para llevar no esta disponible para cobro", HttpStatus.CONFLICT);
         }
 
         String tipo = normalizarTipo(request.tipoComprobanteId());
@@ -229,7 +252,11 @@ public class CajaService {
                 auditoriaContexto
         );
         if (pedido.getSesionMesaId() != null) {
-            programarLiberacionMesa(pedido.getSesionMesaId(), request.pedidoId());
+            if (pedidoParaLlevar) {
+                programarEnvioCocinaParaLlevar(pedido);
+            } else {
+                programarLiberacionMesa(pedido.getSesionMesaId(), request.pedidoId());
+            }
         }
 
         return new ComprobanteResponseDTO(
@@ -319,6 +346,14 @@ public class CajaService {
                         HttpStatus.BAD_REQUEST);
             }
         }
+    }
+
+    private boolean esPedidoParaLlevar(PedidoEntity pedido) {
+        if (pedido.getSesionMesaId() == null) return false;
+        return sesionRepo.findById(pedido.getSesionMesaId())
+                .flatMap(sesion -> mesaRepo.findById(sesion.getMesaId()))
+                .map(MesaEntity::isParaLlevar)
+                .orElse(false);
     }
 
     private DatosComprobanteEntity guardarDatosSiCorresponde(String tipo, DatosComprobanteRequest request) {
@@ -677,5 +712,47 @@ public class CajaService {
         }
 
         liberarMesa.run();
+    }
+
+    private void programarEnvioCocinaParaLlevar(PedidoEntity pedido) {
+        Runnable enviarCocina = () -> {
+            detalleRepo.findByPedidoId(pedido.getId()).stream()
+                    .filter(d -> d.getEstado() == DetallePedidoEntity.EstadoDetalle.PENDIENTE)
+                    .forEach(d -> {
+                        String productoNombre = productoRepo.findById(d.getProductoId())
+                                .map(p -> p.getNombre())
+                                .orElse("Desconocido");
+                        eventPublisher.publicarNuevoItem(new ItemCocinaDTO(
+                                d.getId(),
+                                pedido.getId(),
+                                numeroMesa(pedido),
+                                productoNombre,
+                                d.getCantidad(),
+                                d.getObservaciones(),
+                                d.getCreadoEn()
+                        ));
+                    });
+            mesaService.cerrarSesion(pedido.getSesionMesaId());
+        };
+
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    enviarCocina.run();
+                }
+            });
+            return;
+        }
+
+        enviarCocina.run();
+    }
+
+    private String numeroMesa(PedidoEntity pedido) {
+        if (pedido.getSesionMesaId() == null) return "?";
+        return sesionRepo.findById(pedido.getSesionMesaId())
+                .flatMap(sesion -> mesaRepo.findById(sesion.getMesaId()))
+                .map(MesaEntity::getNumero)
+                .orElse("?");
     }
 }

@@ -477,6 +477,9 @@ public class AdminController {
             Authentication auth, HttpServletRequest httpRequest) {
         MesaEntity mesa = mesaRepo.findById(id)
                 .orElseThrow(() -> new BusinessException("Mesa no encontrada", HttpStatus.NOT_FOUND));
+        if (mesa.isParaLlevar()) {
+            throw new BusinessException("La mesa para llevar es exclusiva de caja", HttpStatus.CONFLICT);
+        }
         if (mesa.getEstado() == MesaEntity.EstadoMesa.OCUPADA) {
             throw new BusinessException("No se puede editar una mesa ocupada", HttpStatus.CONFLICT);
         }
@@ -504,6 +507,9 @@ public class AdminController {
                                                                       HttpServletRequest httpRequest) {
         MesaEntity mesa = mesaRepo.findById(id)
                 .orElseThrow(() -> new BusinessException("Mesa no encontrada", HttpStatus.NOT_FOUND));
+        if (mesa.isParaLlevar()) {
+            throw new BusinessException("La mesa para llevar es exclusiva de caja", HttpStatus.CONFLICT);
+        }
         if (mesa.getEstado() == MesaEntity.EstadoMesa.OCUPADA
                 || mesa.getEstado() == MesaEntity.EstadoMesa.RESERVADA) {
             throw new BusinessException("No se puede cambiar el estado de una mesa ocupada o reservada", HttpStatus.CONFLICT);
@@ -526,6 +532,9 @@ public class AdminController {
                                                           HttpServletRequest httpRequest) {
         MesaEntity mesa = mesaRepo.findById(id)
                 .orElseThrow(() -> new BusinessException("Mesa no encontrada", HttpStatus.NOT_FOUND));
+        if (mesa.isParaLlevar()) {
+            throw new BusinessException("La mesa para llevar es exclusiva de caja", HttpStatus.CONFLICT);
+        }
         if (mesa.getEstado() == MesaEntity.EstadoMesa.OCUPADA) {
             throw new BusinessException("No se puede eliminar una mesa ocupada", HttpStatus.CONFLICT);
         }

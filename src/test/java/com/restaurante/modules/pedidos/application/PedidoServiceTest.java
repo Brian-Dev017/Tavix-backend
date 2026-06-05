@@ -2,6 +2,8 @@ package com.restaurante.modules.pedidos.application;
 
 import com.restaurante.modules.catalogo.infrastructure.persistence.ProductoEntity;
 import com.restaurante.modules.catalogo.infrastructure.persistence.ProductoJpaRepo;
+import com.restaurante.modules.mesas.application.MesaService;
+import com.restaurante.modules.mesas.infrastructure.persistence.MesaEntity;
 import com.restaurante.modules.mesas.infrastructure.persistence.MesaJpaRepo;
 import com.restaurante.modules.mesas.infrastructure.persistence.SesionMesaEntity;
 import com.restaurante.modules.mesas.infrastructure.persistence.SesionMesaJpaRepo;
@@ -38,6 +40,7 @@ class PedidoServiceTest {
     @Mock private DetallePedidoJpaRepo detalleRepo;
     @Mock private SesionMesaJpaRepo sesionRepo;
     @Mock private MesaJpaRepo mesaRepo;
+    @Mock private MesaService mesaService;
     @Mock private ProductoJpaRepo productoRepo;
     @Mock private PedidoEventPublisher eventPublisher;
     @Mock private AuditoriaGlobalService auditoriaGlobalService;
@@ -48,8 +51,8 @@ class PedidoServiceTest {
     @BeforeEach
     void setUp() {
         service = new PedidoService(
-                pedidoRepo, detalleRepo, sesionRepo, mesaRepo, productoRepo,
-                eventPublisher, auditoriaGlobalService
+                pedidoRepo, detalleRepo, sesionRepo, mesaRepo, mesaService,
+                productoRepo, eventPublisher, auditoriaGlobalService
         );
         contexto = new AuditoriaContexto(1L, "test", "MS", "127.0.0.1", "/test");
     }
@@ -69,7 +72,7 @@ class PedidoServiceTest {
         when(productoRepo.findById(11L)).thenReturn(Optional.of(producto));
         when(detalleRepo.save(any(DetallePedidoEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        service.agregarItem(3L, new AgregarItemRequest(11L, 2, "sin cebolla"), 1L, true, contexto);
+        service.agregarItem(3L, new AgregarItemRequest(11L, 2, "sin cebolla"), 1L, true, false, contexto);
 
         assertEquals(PedidoEntity.EstadoPedido.EN_COCINA, pedido.getEstado());
         verify(pedidoRepo).save(pedido);
@@ -89,10 +92,36 @@ class PedidoServiceTest {
         when(productoRepo.findById(11L)).thenReturn(Optional.of(producto));
 
         BusinessException exception = assertThrows(BusinessException.class,
-                () -> service.agregarItem(3L, new AgregarItemRequest(11L, 1, null), 1L, true, contexto));
+                () -> service.agregarItem(3L, new AgregarItemRequest(11L, 1, null), 1L, true, false, contexto));
 
         assertEquals(HttpStatus.CONFLICT, exception.getStatus());
         assertEquals("Producto no disponible", exception.getMessage());
         verify(detalleRepo, never()).save(any());
+    }
+
+    @Test
+    void agregarItemParaLlevarNoEnviaACocinaAntesDelCobro() {
+        PedidoEntity pedido = new PedidoEntity();
+        pedido.setSesionMesaId(7L);
+        SesionMesaEntity sesion = new SesionMesaEntity();
+        sesion.setMesaId(4L);
+        sesion.setMeseroId(2L);
+        MesaEntity mesa = new MesaEntity();
+        mesa.setTipo(MesaEntity.TipoMesa.PARA_LLEVAR);
+        ProductoEntity producto = new ProductoEntity();
+        producto.setNombre("Arroz chaufa");
+        producto.setPrecio(new BigDecimal("18.00"));
+
+        when(pedidoRepo.findById(3L)).thenReturn(Optional.of(pedido));
+        when(sesionRepo.findById(7L)).thenReturn(Optional.of(sesion));
+        when(mesaRepo.findById(4L)).thenReturn(Optional.of(mesa));
+        when(productoRepo.findById(11L)).thenReturn(Optional.of(producto));
+        when(detalleRepo.save(any(DetallePedidoEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.agregarItem(3L, new AgregarItemRequest(11L, 1, null), 2L, false, true, contexto);
+
+        assertEquals(PedidoEntity.EstadoPedido.ABIERTO, pedido.getEstado());
+        verify(pedidoRepo, never()).save(pedido);
+        verify(eventPublisher, never()).publicarNuevoItem(any());
     }
 }

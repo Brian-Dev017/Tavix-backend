@@ -1,6 +1,8 @@
 package com.restaurante.modules.pedidos.application;
 
 import com.restaurante.modules.catalogo.infrastructure.persistence.ProductoJpaRepo;
+import com.restaurante.modules.mesas.application.MesaService;
+import com.restaurante.modules.mesas.infrastructure.persistence.MesaEntity;
 import com.restaurante.modules.mesas.infrastructure.persistence.MesaJpaRepo;
 import com.restaurante.modules.mesas.infrastructure.persistence.SesionMesaJpaRepo;
 import com.restaurante.modules.pedidos.infrastructure.persistence.DetallePedidoEntity;
@@ -30,18 +32,20 @@ public class PedidoService {
     private final DetallePedidoJpaRepo detalleRepo;
     private final SesionMesaJpaRepo sesionRepo;
     private final MesaJpaRepo mesaRepo;
+    private final MesaService mesaService;
     private final ProductoJpaRepo productoRepo;
     private final PedidoEventPublisher eventPublisher;
     private final AuditoriaGlobalService auditoriaGlobalService;
 
     public PedidoService(PedidoJpaRepo pedidoRepo, DetallePedidoJpaRepo detalleRepo,
                          SesionMesaJpaRepo sesionRepo, MesaJpaRepo mesaRepo,
-                         ProductoJpaRepo productoRepo, PedidoEventPublisher eventPublisher,
+                         MesaService mesaService, ProductoJpaRepo productoRepo, PedidoEventPublisher eventPublisher,
                          AuditoriaGlobalService auditoriaGlobalService) {
         this.pedidoRepo = pedidoRepo;
         this.detalleRepo = detalleRepo;
         this.sesionRepo = sesionRepo;
         this.mesaRepo = mesaRepo;
+        this.mesaService = mesaService;
         this.productoRepo = productoRepo;
         this.eventPublisher = eventPublisher;
         this.auditoriaGlobalService = auditoriaGlobalService;
@@ -82,8 +86,28 @@ public class PedidoService {
     }
 
     @Transactional
+    public Long crearPedidoParaLlevar(Long cajeroId, AuditoriaContexto contexto) {
+        Long sesionMesaId = mesaService.abrirSesionParaLlevar(cajeroId);
+        PedidoEntity pedido = new PedidoEntity();
+        pedido.setSesionMesaId(sesionMesaId);
+        pedido.setObservaciones("Pedido para llevar");
+        PedidoEntity saved = pedidoRepo.save(pedido);
+        auditoriaGlobalService.registrar(
+                "pedidos",
+                "pedido",
+                saved.getId().toString(),
+                "CREAR",
+                "Creacion de pedido para llevar",
+                null,
+                saved,
+                contexto
+        );
+        return saved.getId();
+    }
+
+    @Transactional
     public ItemPedidoDTO agregarItem(Long pedidoId, AgregarItemRequest request, Long usuarioId, boolean admin,
-                                     AuditoriaContexto contexto) {
+                                     boolean cajero, AuditoriaContexto contexto) {
         PedidoEntity pedido = pedidoRepo.findById(pedidoId)
                 .orElseThrow(() -> new BusinessException("Pedido no encontrado", HttpStatus.NOT_FOUND));
         var sesion = sesionRepo.findById(pedido.getSesionMesaId())
@@ -91,7 +115,8 @@ public class PedidoService {
         if (sesion.getCerradaEn() != null) {
             throw new BusinessException("La sesion de mesa esta cerrada", HttpStatus.CONFLICT);
         }
-        if (!admin && !sesion.getMeseroId().equals(usuarioId)) {
+        boolean paraLlevar = esSesionParaLlevar(sesion.getMesaId());
+        if (!admin && !sesion.getMeseroId().equals(usuarioId) && !(cajero && paraLlevar)) {
             throw new BusinessException("No puedes agregar items a una mesa tomada por otro mesero",
                     HttpStatus.FORBIDDEN);
         }
@@ -126,7 +151,7 @@ public class PedidoService {
                 contexto
         );
 
-        if (pedido.getEstado() == PedidoEntity.EstadoPedido.ABIERTO) {
+        if (!paraLlevar && pedido.getEstado() == PedidoEntity.EstadoPedido.ABIERTO) {
             PedidoEntity.EstadoPedido estadoAnterior = pedido.getEstado();
             pedido.setEstado(PedidoEntity.EstadoPedido.EN_COCINA);
             PedidoEntity updated = pedidoRepo.save(pedido);
@@ -147,11 +172,13 @@ public class PedidoService {
                 .map(m -> m.getNumero())
                 .orElse("?");
 
-        eventPublisher.publicarNuevoItem(new ItemCocinaDTO(
-                saved.getId(), pedidoId, numeroMesa,
-                producto.getNombre(), request.cantidad(),
-                request.observaciones(), saved.getCreadoEn()
-        ));
+        if (!paraLlevar) {
+            eventPublisher.publicarNuevoItem(new ItemCocinaDTO(
+                    saved.getId(), pedidoId, numeroMesa,
+                    producto.getNombre(), request.cantidad(),
+                    request.observaciones(), saved.getCreadoEn()
+            ));
+        }
 
         BigDecimal subtotal = producto.getPrecio().multiply(BigDecimal.valueOf(request.cantidad()));
         return new ItemPedidoDTO(
@@ -161,12 +188,13 @@ public class PedidoService {
         );
     }
 
-    public List<ItemPedidoDTO> getDetalle(Long pedidoId, Long usuarioId, boolean admin) {
+    public List<ItemPedidoDTO> getDetalle(Long pedidoId, Long usuarioId, boolean admin, boolean cajero) {
         PedidoEntity pedido = pedidoRepo.findById(pedidoId)
                 .orElseThrow(() -> new BusinessException("Pedido no encontrado", HttpStatus.NOT_FOUND));
         var sesion = sesionRepo.findById(pedido.getSesionMesaId())
                 .orElseThrow(() -> new BusinessException("Sesion de mesa no encontrada", HttpStatus.NOT_FOUND));
-        if (!admin && !sesion.getMeseroId().equals(usuarioId)) {
+        boolean paraLlevar = esSesionParaLlevar(sesion.getMesaId());
+        if (!admin && !sesion.getMeseroId().equals(usuarioId) && !(cajero && paraLlevar)) {
             throw new BusinessException("No puedes ver un pedido de otro mesero", HttpStatus.FORBIDDEN);
         }
         return detalleRepo.findByPedidoId(pedidoId).stream()
@@ -181,5 +209,12 @@ public class PedidoService {
                             subtotal, d.getEstado().name(), d.getObservaciones(), d.getCreadoEn()
                     );
                 }).toList();
+    }
+
+    private boolean esSesionParaLlevar(Long mesaId) {
+        if (mesaId == null) return false;
+        return mesaRepo.findById(mesaId)
+                .map(MesaEntity::isParaLlevar)
+                .orElse(false);
     }
 }
