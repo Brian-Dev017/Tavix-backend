@@ -3,7 +3,12 @@ package com.restaurante.modules.auth.infrastructure.persistence;
 import jakarta.persistence.*;
 
 @Entity
-@Table(name = "usuario")
+@Table(
+        name = "usuario",
+        indexes = {
+                @Index(name = "uk_usuario_usuario", columnList = "usuario", unique = true)
+        }
+)
 public class UsuarioEntity {
 
     @Id

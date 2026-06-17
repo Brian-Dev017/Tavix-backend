@@ -107,8 +107,11 @@ public class CajaService {
     public List<PedidoResumenDTO> getPedidosActivos() {
         List<Object[]> rows = em.createNativeQuery(
                 "SELECT v.pedido_id, v.mesa, v.mesero, v.total_items, v.subtotal, v.igv, " +
-                "v.total_con_igv, v.estado_pedido " +
+                "v.total_con_igv, v.estado_pedido, m.tipo " +
                 "FROM v_consumo_por_pedido v " +
+                "JOIN pedido p ON p.id = v.pedido_id " +
+                "JOIN sesion_mesa sm ON sm.id = p.sesion_mesa_id " +
+                "JOIN mesa m ON m.id = sm.mesa_id " +
                 "WHERE v.estado_pedido IN ('ABIERTO','EN_COCINA','LISTO') " +
                 "AND v.total_items > 0 " +
                 "AND v.total_con_igv > 0 " +
@@ -125,6 +128,7 @@ public class CajaService {
                 (BigDecimal) r[5],
                 (BigDecimal) r[6],
                 (String) r[7],
+                "PARA_LLEVAR".equals(String.valueOf(r[8])),
                 cargarItems(((Number) r[0]).longValue())
         )).toList();
     }

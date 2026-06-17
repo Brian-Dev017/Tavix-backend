@@ -13,5 +13,6 @@ public record PedidoResumenDTO(
         BigDecimal igv,
         BigDecimal totalConIgv,
         String estadoPedido,
+        boolean paraLlevar,
         List<ItemPedidoDTO> items
 ) {}

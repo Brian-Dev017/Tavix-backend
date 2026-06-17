@@ -4,7 +4,13 @@ import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "refresh_token")
+@Table(
+        name = "refresh_token",
+        indexes = {
+                @Index(name = "uk_refresh_token_token", columnList = "token", unique = true),
+                @Index(name = "idx_refresh_token_usuario_id", columnList = "usuario_id")
+        }
+)
 public class RefreshTokenEntity {
 
     @Id
