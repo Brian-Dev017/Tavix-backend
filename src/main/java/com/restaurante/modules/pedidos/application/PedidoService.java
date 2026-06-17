@@ -133,12 +133,18 @@ public class PedidoService {
             throw new BusinessException("Producto no disponible", HttpStatus.CONFLICT);
         }
 
+        boolean requiereCocina = producto.isRequiereCocina();
+
         DetallePedidoEntity detalle = new DetallePedidoEntity();
         detalle.setPedidoId(pedidoId);
         detalle.setProductoId(request.productoId());
         detalle.setCantidad(request.cantidad());
         detalle.setPrecioUnitario(producto.getPrecio());
         detalle.setObservaciones(request.observaciones());
+        // Las bebidas/productos que no pasan por cocina quedan LISTO de inmediato
+        if (!requiereCocina) {
+            detalle.setEstado(DetallePedidoEntity.EstadoDetalle.LISTO);
+        }
         DetallePedidoEntity saved = detalleRepo.save(detalle);
         auditoriaGlobalService.registrar(
                 "pedidos",
@@ -151,20 +157,23 @@ public class PedidoService {
                 contexto
         );
 
-        if (!paraLlevar && pedido.getEstado() == PedidoEntity.EstadoPedido.ABIERTO) {
+        if (!paraLlevar) {
             PedidoEntity.EstadoPedido estadoAnterior = pedido.getEstado();
-            pedido.setEstado(PedidoEntity.EstadoPedido.EN_COCINA);
-            PedidoEntity updated = pedidoRepo.save(pedido);
-            auditoriaGlobalService.registrar(
-                    "pedidos",
-                    "pedido",
-                    updated.getId().toString(),
-                    "CAMBIO_ESTADO",
-                    "Cambio de estado de pedido",
-                    Map.of("estado", estadoAnterior.name()),
-                    Map.of("estado", updated.getEstado().name()),
-                    contexto
-            );
+            PedidoEntity.EstadoPedido nuevoEstado = calcularEstadoPedido(pedidoId, estadoAnterior);
+            if (nuevoEstado != estadoAnterior) {
+                pedido.setEstado(nuevoEstado);
+                PedidoEntity updated = pedidoRepo.save(pedido);
+                auditoriaGlobalService.registrar(
+                        "pedidos",
+                        "pedido",
+                        updated.getId().toString(),
+                        "CAMBIO_ESTADO",
+                        "Cambio de estado de pedido",
+                        Map.of("estado", estadoAnterior.name()),
+                        Map.of("estado", updated.getEstado().name()),
+                        contexto
+                );
+            }
         }
 
         String numeroMesa = sesionRepo.findById(pedido.getSesionMesaId())
@@ -172,13 +181,22 @@ public class PedidoService {
                 .map(m -> m.getNumero())
                 .orElse("?");
 
-        if (!paraLlevar) {
+        // Solo se envía a la cola de cocina si el producto pasa por cocina
+        if (!paraLlevar && requiereCocina) {
             eventPublisher.publicarNuevoItem(new ItemCocinaDTO(
                     saved.getId(), pedidoId, numeroMesa,
                     producto.getNombre(), request.cantidad(),
                     request.observaciones(), saved.getCreadoEn()
             ));
         }
+
+        // Notificar cambio de pedido para refresco en tiempo real (caja/mesas)
+        eventPublisher.publicarPedidoEvento(Map.of(
+                "evento", "ITEM_AGREGADO",
+                "pedidoId", pedidoId,
+                "estado", pedido.getEstado().name(),
+                "mesa", numeroMesa
+        ));
 
         BigDecimal subtotal = producto.getPrecio().multiply(BigDecimal.valueOf(request.cantidad()));
         return new ItemPedidoDTO(
@@ -209,6 +227,30 @@ public class PedidoService {
                             subtotal, d.getEstado().name(), d.getObservaciones(), d.getCreadoEn()
                     );
                 }).toList();
+    }
+
+    /**
+     * Recalcula el estado del pedido a partir de sus ítems activos.
+     * Si todos están LISTO/ENTREGADO (p.ej. solo bebidas) → LISTO; si hay
+     * pendientes que pasan por cocina → EN_COCINA. No toca COBRADO/CANCELADO.
+     */
+    private PedidoEntity.EstadoPedido calcularEstadoPedido(Long pedidoId, PedidoEntity.EstadoPedido actual) {
+        if (actual == PedidoEntity.EstadoPedido.COBRADO
+                || actual == PedidoEntity.EstadoPedido.CANCELADO) {
+            return actual;
+        }
+        List<DetallePedidoEntity> activos = detalleRepo.findByPedidoId(pedidoId).stream()
+                .filter(d -> d.getEstado() != DetallePedidoEntity.EstadoDetalle.CANCELADO)
+                .toList();
+        if (activos.isEmpty()) {
+            return actual;
+        }
+        boolean todosListos = activos.stream().allMatch(d ->
+                d.getEstado() == DetallePedidoEntity.EstadoDetalle.LISTO
+                        || d.getEstado() == DetallePedidoEntity.EstadoDetalle.ENTREGADO);
+        return todosListos
+                ? PedidoEntity.EstadoPedido.LISTO
+                : PedidoEntity.EstadoPedido.EN_COCINA;
     }
 
     private boolean esSesionParaLlevar(Long mesaId) {

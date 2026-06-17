@@ -94,10 +94,12 @@ class CajaServiceTest {
     @Test
     void emitirComprobanteCompletaSinCerrarSesionManualmente() {
         PedidoEntity pedido = new PedidoEntity();
+        ReflectionTestUtils.setField(pedido, "id", 8L);
         pedido.setSesionMesaId(22L);
         pedido.setEstado(PedidoEntity.EstadoPedido.LISTO);
 
         SerieComprobanteEntity serie = new SerieComprobanteEntity();
+        ReflectionTestUtils.setField(serie, "id", 3L);
         serie.setTipo("T");
         serie.setSerie("T001");
         serie.setCorrelativoActual(7);
@@ -115,7 +117,11 @@ class CajaServiceTest {
         }));
         when(serieRepo.findTopByTipoAndActivoTrueOrderByIdAsc("T")).thenReturn(Optional.of(serie));
         when(comprobanteRepo.save(any(ComprobanteEntity.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+                .thenAnswer(invocation -> {
+                    ComprobanteEntity c = invocation.getArgument(0);
+                    ReflectionTestUtils.setField(c, "id", 99L);
+                    return c;
+                });
         when(comprobanteRepo.saveAndFlush(any(ComprobanteEntity.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -129,6 +135,7 @@ class CajaServiceTest {
     @Test
     void emitirComprobanteParaLlevarPermitePedidoAbiertoYEnviaACocina() {
         PedidoEntity pedido = new PedidoEntity();
+        ReflectionTestUtils.setField(pedido, "id", 8L);
         pedido.setSesionMesaId(22L);
         pedido.setEstado(PedidoEntity.EstadoPedido.ABIERTO);
         SesionMesaEntity sesion = new SesionMesaEntity();
@@ -138,6 +145,7 @@ class CajaServiceTest {
         mesa.setTipo(MesaEntity.TipoMesa.PARA_LLEVAR);
 
         SerieComprobanteEntity serie = new SerieComprobanteEntity();
+        ReflectionTestUtils.setField(serie, "id", 3L);
         serie.setTipo("T");
         serie.setSerie("T001");
         serie.setCorrelativoActual(7);
@@ -164,7 +172,11 @@ class CajaServiceTest {
         }));
         when(serieRepo.findTopByTipoAndActivoTrueOrderByIdAsc("T")).thenReturn(Optional.of(serie));
         when(comprobanteRepo.save(any(ComprobanteEntity.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+                .thenAnswer(invocation -> {
+                    ComprobanteEntity c = invocation.getArgument(0);
+                    ReflectionTestUtils.setField(c, "id", 99L);
+                    return c;
+                });
         when(comprobanteRepo.saveAndFlush(any(ComprobanteEntity.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         when(detalleRepo.findByPedidoId(8L)).thenReturn(List.of(detalle));

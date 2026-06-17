@@ -172,12 +172,14 @@ public class CajaService {
                         HttpStatus.CONFLICT));
 
         Object[] t = cargarTotales(request.pedidoId());
-        BigDecimal subtotal = (BigDecimal) t[0];
-        BigDecimal totalBruto = (BigDecimal) t[2];
+        BigDecimal igvBruto = (BigDecimal) t[1];     // IGV ya extraido del total que incluye IGV
+        BigDecimal totalBruto = (BigDecimal) t[2];   // bruto: el precio ya incluye IGV
         BigDecimal descuento = normalizarDescuento(request.descuento(), totalBruto, request.motivoDescuento());
         BigDecimal totalAntesRedondeo = totalBruto.subtract(descuento);
-        BigDecimal igv = calcularIgvInformativo(totalAntesRedondeo);
         BigDecimal total = aplicarRedondeoSegunMetodo(totalAntesRedondeo, metodoPago);
+        // IGV proporcional al total final (ajusta por descuento y redondeo); base = total - IGV
+        BigDecimal igv = igvProporcional(igvBruto, total, totalBruto);
+        BigDecimal subtotal = total.subtract(igv);
         BigDecimal efectivoRecibido = normalizarEfectivoRecibido(metodoPago, request.efectivoRecibido(), total);
         BigDecimal vuelto = metodoPago == ComprobanteEntity.MetodoPago.EFECTIVO
                 ? efectivoRecibido.subtract(total)
@@ -263,6 +265,16 @@ public class CajaService {
             }
         }
 
+        // Notificar la venta en tiempo real (dashboard/caja) tras confirmar la transacción
+        Map<String, Object> ventaEvento = new LinkedHashMap<>();
+        ventaEvento.put("comprobanteId", saved.getId());
+        ventaEvento.put("serie", saved.getSerie());
+        ventaEvento.put("numero", saved.getNumero());
+        ventaEvento.put("total", total);
+        ventaEvento.put("metodoPago", saved.getMetodoPago().name());
+        ventaEvento.put("pagadoEn", saved.getPagadoEn());
+        publicarTrasCommit(() -> eventPublisher.publicarVenta(ventaEvento));
+
         return new ComprobanteResponseDTO(
                 saved.getId(), saved.getPedidoId(),
                 saved.getTipoComprobanteId(), saved.getSerie(), saved.getNumero(),
@@ -271,6 +283,22 @@ public class CajaService {
                 saved.getEfectivoRecibido(), saved.getVuelto(),
                 saved.getEstado().name(), saved.getPagadoEn()
         );
+    }
+
+    /** Ejecuta la acción tras el commit (o de inmediato si no hay transacción activa). */
+    private void publicarTrasCommit(Runnable accion) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    try { accion.run(); } catch (RuntimeException ex) {
+                        log.warn("No se pudo publicar el evento de venta: {}", ex.getMessage());
+                    }
+                }
+            });
+        } else {
+            try { accion.run(); } catch (RuntimeException ignored) {}
+        }
     }
 
     public byte[] generarEscPos(Long comprobanteId) {
@@ -423,8 +451,16 @@ public class CajaService {
                 .setScale(2, RoundingMode.UNNECESSARY);
     }
 
-    private BigDecimal calcularIgvInformativo(BigDecimal totalVenta) {
-        return totalVenta.multiply(new BigDecimal("0.18")).setScale(2, RoundingMode.HALF_UP);
+    /**
+     * IGV ya viene EXTRAIDO del total bruto (precio incluye IGV). Si hubo descuento o
+     * redondeo, se ajusta proporcionalmente para mantener base + IGV = total.
+     */
+    private BigDecimal igvProporcional(BigDecimal igvBruto, BigDecimal total, BigDecimal totalBruto) {
+        if (totalBruto == null || totalBruto.signum() == 0) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal igvBase = igvBruto == null ? BigDecimal.ZERO : igvBruto;
+        return igvBase.multiply(total).divide(totalBruto, 2, RoundingMode.HALF_UP);
     }
 
     private String nombreTipoComprobante(String tipo) {

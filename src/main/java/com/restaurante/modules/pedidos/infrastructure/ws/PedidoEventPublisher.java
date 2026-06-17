@@ -16,4 +16,14 @@ public class PedidoEventPublisher {
     public void publicarNuevoItem(ItemCocinaDTO item) {
         messagingTemplate.convertAndSend("/topic/cocina", item);
     }
+
+    /** Notifica una venta cobrada (refresco automático de dashboard/caja). */
+    public void publicarVenta(Object evento) {
+        messagingTemplate.convertAndSend("/topic/ventas", evento);
+    }
+
+    /** Notifica cambios en pedidos (creación, items, estado) para refresco de caja/mesas. */
+    public void publicarPedidoEvento(Object evento) {
+        messagingTemplate.convertAndSend("/topic/pedidos", evento);
+    }
 }

@@ -12,6 +12,8 @@ import com.restaurante.modules.pedidos.infrastructure.persistence.DetallePedidoJ
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoEntity;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoJpaRepo;
 import com.restaurante.shared.response.ApiResponse;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -38,6 +40,9 @@ public class ReportesController {
     private final ProductoJpaRepo productoRepo;
     private final DatosComprobanteJpaRepo datosComprobanteRepo;
     private final NegocioConfigJpaRepo negocioConfigRepo;
+
+    @PersistenceContext
+    private EntityManager em;
 
     public ReportesController(ComprobanteJpaRepo comprobanteRepo,
                                PedidoJpaRepo pedidoRepo,
@@ -109,11 +114,15 @@ public class ReportesController {
             List<ItemDetalleReporte> items
     ) {}
 
+    public record VentaPorCategoria(String categoria, BigDecimal total, long cantidad) {}
+
     public record DashboardResponse(
             BigDecimal ventasHoy,
             long pedidosHoy,
             List<VentaPorMetodo> ventasPorMetodo,
-            List<PlatoVendido> platosVendidos
+            List<PlatoVendido> platosVendidos,
+            List<VentaPorDia> ventasPorDia,
+            List<VentaPorCategoria> ventasPorCategoria
     ) {}
 
     // ──────────────── GET /ventas ────────────────
@@ -286,8 +295,42 @@ public class ReportesController {
                 })
                 .toList();
 
+        // Serie diaria de ventas (para gráfico de barras real por día)
+        List<VentaPorDia> ventasPorDia = comprobantesHoy.stream()
+                .collect(Collectors.groupingBy(c -> c.getPagadoEn().toLocalDate()))
+                .entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .map(e -> new VentaPorDia(
+                        e.getKey().format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
+                        e.getValue().stream().map(ComprobanteEntity::getTotal)
+                                .filter(Objects::nonNull).reduce(BigDecimal.ZERO, BigDecimal::add),
+                        e.getValue().size()))
+                .toList();
+
+        // Ventas por categoría (gráfico de torta/barras por categoría)
+        @SuppressWarnings("unchecked")
+        List<Object[]> filasCat = em.createNativeQuery(
+                "SELECT COALESCE(c.nombre,'Sin categoria') categoria, " +
+                "ROUND(SUM(dp.cantidad*dp.precio_unitario),2) total, SUM(dp.cantidad) cantidad " +
+                "FROM detalle_pedido dp " +
+                "JOIN comprobante_venta cv ON cv.pedido_id=dp.pedido_id AND cv.estado='COMPLETADO' " +
+                "JOIN producto pr ON pr.id=dp.producto_id " +
+                "LEFT JOIN categoria c ON c.id=pr.categoria_id " +
+                "WHERE dp.estado<>'CANCELADO' AND cv.pagado_en BETWEEN ?1 AND ?2 " +
+                "GROUP BY c.nombre ORDER BY total DESC")
+                .setParameter(1, inicioDia)
+                .setParameter(2, finDia)
+                .getResultList();
+        List<VentaPorCategoria> ventasPorCategoria = filasCat.stream()
+                .map(r -> new VentaPorCategoria(
+                        (String) r[0],
+                        r[1] == null ? BigDecimal.ZERO : (BigDecimal) r[1],
+                        r[2] == null ? 0L : ((Number) r[2]).longValue()))
+                .toList();
+
         return ResponseEntity.ok(ApiResponse.ok(
-                new DashboardResponse(ventasHoy, cantidadPedidosHoy, ventasPorMetodo, platosVendidos)));
+                new DashboardResponse(ventasHoy, cantidadPedidosHoy, ventasPorMetodo, platosVendidos,
+                        ventasPorDia, ventasPorCategoria)));
     }
 
     @GetMapping("/historial/{comprobanteId}/detalle")

@@ -88,8 +88,19 @@ public class ArqueoController {
     @PostMapping("/abrir")
     public ResponseEntity<ApiResponse<ArqueoEntity>> abrir(@RequestBody AbrirArqueoRequest req, Authentication auth) {
         Long cajeroId = usuarioId(auth);
+        // El administrador no apertura caja (solo puede cerrarla manualmente)
+        if (esAdmin(auth)) {
+            throw new BusinessException("El administrador no puede aperturar una caja", HttpStatus.FORBIDDEN);
+        }
+        // No puede tener una caja abierta simultáneamente
         arqueoRepo.findTopByCajeroIdAndEstadoOrderByAperturaEnDesc(cajeroId, ArqueoEntity.EstadoArqueo.ABIERTO)
                 .ifPresent(a -> { throw new BusinessException("Ya tienes una caja abierta"); });
+        // Una sola apertura por día por usuario (esté abierta o ya cerrada)
+        LocalDateTime inicioDia = java.time.LocalDate.now().atStartOfDay();
+        LocalDateTime finDia = java.time.LocalDate.now().atTime(java.time.LocalTime.MAX);
+        if (arqueoRepo.existsByCajeroIdAndAperturaEnBetween(cajeroId, inicioDia, finDia)) {
+            throw new BusinessException("Solo se permite una apertura de caja por día", HttpStatus.CONFLICT);
+        }
         if (req.montoApertura() == null || req.montoApertura().signum() < 0) {
             throw new BusinessException("El monto de apertura debe ser mayor o igual a cero", HttpStatus.BAD_REQUEST);
         }

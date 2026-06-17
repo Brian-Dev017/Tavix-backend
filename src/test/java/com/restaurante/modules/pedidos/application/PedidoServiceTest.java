@@ -22,6 +22,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
+import org.springframework.test.util.ReflectionTestUtils;
+
+import java.util.List;
 
 import java.math.BigDecimal;
 import java.util.Optional;
@@ -60,17 +63,28 @@ class PedidoServiceTest {
     @Test
     void agregarPrimerItemMuevePedidoAEnCocina() {
         PedidoEntity pedido = new PedidoEntity();
+        ReflectionTestUtils.setField(pedido, "id", 3L);
         pedido.setSesionMesaId(7L);
         SesionMesaEntity sesion = new SesionMesaEntity();
         sesion.setMeseroId(1L);
         ProductoEntity producto = new ProductoEntity();
         producto.setNombre("Ceviche");
         producto.setPrecio(new BigDecimal("25.00"));
+        producto.setRequiereCocina(true);
 
         when(pedidoRepo.findById(3L)).thenReturn(Optional.of(pedido));
         when(sesionRepo.findById(7L)).thenReturn(Optional.of(sesion));
         when(productoRepo.findById(11L)).thenReturn(Optional.of(producto));
-        when(detalleRepo.save(any(DetallePedidoEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(detalleRepo.save(any(DetallePedidoEntity.class))).thenAnswer(invocation -> {
+            DetallePedidoEntity d = invocation.getArgument(0);
+            ReflectionTestUtils.setField(d, "id", 100L);
+            return d;
+        });
+        // Un ítem PENDIENTE en cocina hace que el pedido pase a EN_COCINA
+        DetallePedidoEntity enCocina = new DetallePedidoEntity();
+        enCocina.setEstado(DetallePedidoEntity.EstadoDetalle.PENDIENTE);
+        when(detalleRepo.findByPedidoId(3L)).thenReturn(List.of(enCocina));
+        when(pedidoRepo.save(any(PedidoEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         service.agregarItem(3L, new AgregarItemRequest(11L, 2, "sin cebolla"), 1L, true, false, contexto);
 
@@ -116,7 +130,11 @@ class PedidoServiceTest {
         when(sesionRepo.findById(7L)).thenReturn(Optional.of(sesion));
         when(mesaRepo.findById(4L)).thenReturn(Optional.of(mesa));
         when(productoRepo.findById(11L)).thenReturn(Optional.of(producto));
-        when(detalleRepo.save(any(DetallePedidoEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(detalleRepo.save(any(DetallePedidoEntity.class))).thenAnswer(invocation -> {
+            DetallePedidoEntity d = invocation.getArgument(0);
+            ReflectionTestUtils.setField(d, "id", 100L);
+            return d;
+        });
 
         service.agregarItem(3L, new AgregarItemRequest(11L, 1, null), 2L, false, true, contexto);
 
