@@ -44,11 +44,22 @@ public class ArqueoController {
 
     // ──────────────── DTOs ────────────────
 
-    public record AbrirArqueoRequest(Long cajeroId, BigDecimal montoApertura, String notas) {}
+    public record AbrirArqueoRequest(
+            String usuario,
+            String contrasena,
+            BigDecimal montoApertura,
+            String notas
+    ) {}
 
     public record CerrarArqueoRequest(BigDecimal montoCierre, String notas) {}
 
     public record PrecierreArqueoRequest(String usuario, String contrasena, BigDecimal montoEfectivo, String notas) {}
+
+    public record EstadoAperturaResponse(
+            boolean cajaAbierta,
+            long aperturasHoy,
+            boolean requiereAdministrador
+    ) {}
 
     public record ArqueoReporteResponse(
             Long arqueoId,
@@ -90,6 +101,22 @@ public class ArqueoController {
         return ResponseEntity.ok(ApiResponse.ok(arqueo));
     }
 
+    @GetMapping("/estado-apertura")
+    public ResponseEntity<ApiResponse<EstadoAperturaResponse>> estadoApertura(Authentication auth) {
+        if (esAdmin(auth)) {
+            throw new BusinessException("El administrador no puede aperturar una caja", HttpStatus.FORBIDDEN);
+        }
+        Long cajeroId = usuarioId(auth);
+        long aperturasHoy = contarAperturasHoy(cajeroId);
+        boolean cajaAbierta = arqueoRepo
+                .findTopByCajeroIdAndEstadoOrderByAperturaEnDesc(
+                        cajeroId, ArqueoEntity.EstadoArqueo.ABIERTO)
+                .isPresent();
+        return ResponseEntity.ok(ApiResponse.ok(
+                new EstadoAperturaResponse(cajaAbierta, aperturasHoy, aperturasHoy > 0)
+        ));
+    }
+
     @PostMapping("/abrir")
     public ResponseEntity<ApiResponse<ArqueoEntity>> abrir(@RequestBody AbrirArqueoRequest req, Authentication auth) {
         Long cajeroId = usuarioId(auth);
@@ -103,8 +130,14 @@ public class ArqueoController {
         // Una sola apertura por día por usuario (esté abierta o ya cerrada)
         LocalDateTime inicioDia = java.time.LocalDate.now().atStartOfDay();
         LocalDateTime finDia = java.time.LocalDate.now().atTime(java.time.LocalTime.MAX);
-        if (arqueoRepo.existsByCajeroIdAndAperturaEnBetween(cajeroId, inicioDia, finDia)) {
-            throw new BusinessException("Solo se permite una apertura de caja por día", HttpStatus.CONFLICT);
+        long aperturasHoy = arqueoRepo.countByCajeroIdAndAperturaEnBetween(cajeroId, inicioDia, finDia);
+        if (req == null) {
+            throw new BusinessException("Los datos de apertura son obligatorios", HttpStatus.BAD_REQUEST);
+        }
+        if (aperturasHoy == 0) {
+            validarCredencialesCajero(req.usuario(), req.contrasena(), cajeroId);
+        } else {
+            validarCredencialesAdministrador(req.usuario(), req.contrasena());
         }
         if (req.montoApertura() == null || req.montoApertura().signum() < 0) {
             throw new BusinessException("El monto de apertura debe ser mayor o igual a cero", HttpStatus.BAD_REQUEST);
@@ -136,8 +169,10 @@ public class ArqueoController {
         if (!esAdmin(auth) && !arqueo.getCajeroId().equals(usuarioAuthId)) {
             throw new BusinessException("No puedes registrar el pre-cierre de otro cajero", HttpStatus.FORBIDDEN);
         }
-        if (arqueo.getEstado() == ArqueoEntity.EstadoArqueo.CERRADO) {
-            throw new BusinessException("El arqueo ya esta cerrado", HttpStatus.CONFLICT);
+        if (arqueo.getEstado() != ArqueoEntity.EstadoArqueo.ABIERTO) {
+            throw new BusinessException(
+                    "El pre-cierre solo se puede registrar en una caja abierta",
+                    HttpStatus.CONFLICT);
         }
         long pagosPendientes = pedidoRepo.countByEstadoIn(List.of(
                 PedidoEntity.EstadoPedido.ABIERTO,
@@ -166,6 +201,7 @@ public class ArqueoController {
         arqueo.setTotalRedondeo(resumen.totalRedondeo());
         arqueo.setMontoEsperado(resumen.montoEsperado());
         arqueo.setDiferencia(montoEfectivo.subtract(resumen.montoEsperado()));
+        arqueo.setEstado(ArqueoEntity.EstadoArqueo.PRECIERRE);
         if (req.notas() != null) arqueo.setNotas(req.notas());
 
         ArqueoEntity guardado = arqueoRepo.save(arqueo);
@@ -176,20 +212,24 @@ public class ArqueoController {
     public ResponseEntity<ApiResponse<ArqueoEntity>> cerrar(@PathVariable Long id,
                                                              @RequestBody CerrarArqueoRequest req,
                                                              Authentication auth) {
+        if (!esAdmin(auth)) {
+            throw new BusinessException("Solo un administrador puede cerrar la caja", HttpStatus.FORBIDDEN);
+        }
         ArqueoEntity arqueo = arqueoRepo.findById(id)
                 .orElseThrow(() -> new BusinessException("Arqueo no encontrado", HttpStatus.NOT_FOUND));
-        if (!esAdmin(auth) && !arqueo.getCajeroId().equals(usuarioId(auth))) {
-            throw new BusinessException("No puedes cerrar la caja de otro cajero", HttpStatus.FORBIDDEN);
-        }
 
-        if (arqueo.getEstado() == ArqueoEntity.EstadoArqueo.CERRADO) {
-            throw new BusinessException("El arqueo ya está cerrado");
+        if (arqueo.getEstado() != ArqueoEntity.EstadoArqueo.PRECIERRE) {
+            throw new BusinessException(
+                    "Solo se puede cerrar una caja con pre-cierre registrado",
+                    HttpStatus.CONFLICT);
         }
 
         LocalDateTime ahora = LocalDateTime.now();
         ResumenArqueo resumen = calcularResumen(arqueo, ahora);
 
-        BigDecimal montoCierre = req.montoCierre() == null ? BigDecimal.ZERO : req.montoCierre();
+        BigDecimal montoCierre = req == null || req.montoCierre() == null
+                ? BigDecimal.ZERO
+                : req.montoCierre();
         if (montoCierre.signum() < 0) {
             throw new BusinessException("El monto de cierre debe ser mayor o igual a cero", HttpStatus.BAD_REQUEST);
         }
@@ -203,7 +243,7 @@ public class ArqueoController {
         arqueo.setDiferencia(montoCierre.subtract(resumen.montoEsperado()));
         arqueo.setCierreEn(ahora);
         arqueo.setEstado(ArqueoEntity.EstadoArqueo.CERRADO);
-        if (req.notas() != null) arqueo.setNotas(req.notas());
+        if (req != null && req.notas() != null) arqueo.setNotas(req.notas());
 
         ArqueoEntity guardado = arqueoRepo.save(arqueo);
         return ResponseEntity.ok(ApiResponse.ok("Arqueo cerrado", guardado));
@@ -228,9 +268,8 @@ public class ArqueoController {
     }
 
     private ResumenArqueo calcularResumen(ArqueoEntity arqueo, LocalDateTime hasta) {
-        LocalDateTime apertura = arqueo.getAperturaEn();
-        List<ComprobanteEntity> ventas = comprobanteRepo.findByCajeroIdAndEstadoAndPagadoEnBetween(
-                arqueo.getCajeroId(), ComprobanteEntity.EstadoComprobante.COMPLETADO, apertura, hasta);
+        List<ComprobanteEntity> ventas = comprobanteRepo.findByArqueoCajaIdAndEstado(
+                arqueo.getId(), ComprobanteEntity.EstadoComprobante.COMPLETADO);
 
         BigDecimal totalVentas = ventas.stream()
                 .map(ComprobanteEntity::getTotal)
@@ -291,5 +330,45 @@ public class ArqueoController {
                 || !passwordEncoder.matches(req.contrasena(), usuario.getContrasenaHash())) {
             throw new BusinessException("Las credenciales no pertenecen al cajero actual", HttpStatus.FORBIDDEN);
         }
+    }
+
+    private long contarAperturasHoy(Long cajeroId) {
+        LocalDateTime inicioDia = java.time.LocalDate.now().atStartOfDay();
+        LocalDateTime finDia = java.time.LocalDate.now().atTime(java.time.LocalTime.MAX);
+        return arqueoRepo.countByCajeroIdAndAperturaEnBetween(cajeroId, inicioDia, finDia);
+    }
+
+    private void validarCredencialesCajero(String username, String contrasena, Long cajeroId) {
+        UsuarioEntity usuario = buscarUsuarioCredenciales(
+                username, contrasena, "Las credenciales no pertenecen al cajero actual");
+        if (!usuario.getId().equals(cajeroId) || !"CA".equals(usuario.getRolId())) {
+            throw new BusinessException(
+                    "Las credenciales no pertenecen al cajero actual",
+                    HttpStatus.FORBIDDEN);
+        }
+    }
+
+    private void validarCredencialesAdministrador(String username, String contrasena) {
+        UsuarioEntity usuario = buscarUsuarioCredenciales(
+                username, contrasena, "La reapertura requiere credenciales de un administrador");
+        if (!"AD".equals(usuario.getRolId())) {
+            throw new BusinessException(
+                    "La reapertura requiere credenciales de un administrador",
+                    HttpStatus.FORBIDDEN);
+        }
+    }
+
+    private UsuarioEntity buscarUsuarioCredenciales(String username,
+                                                     String contrasena,
+                                                     String mensajeError) {
+        if (username == null || username.isBlank() || contrasena == null || contrasena.isBlank()) {
+            throw new BusinessException(mensajeError, HttpStatus.BAD_REQUEST);
+        }
+        UsuarioEntity usuario = usuarioRepo.findByUsuario(username.trim())
+                .orElseThrow(() -> new BusinessException(mensajeError, HttpStatus.FORBIDDEN));
+        if (!usuario.isActivo() || !passwordEncoder.matches(contrasena, usuario.getContrasenaHash())) {
+            throw new BusinessException(mensajeError, HttpStatus.FORBIDDEN);
+        }
+        return usuario;
     }
 }

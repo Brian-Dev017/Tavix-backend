@@ -54,7 +54,7 @@ public class ArqueoEntity {
     @Column(name = "total_redondeo", precision = 10, scale = 2)
     private BigDecimal totalRedondeo = BigDecimal.ZERO;
 
-    public enum EstadoArqueo { ABIERTO, CERRADO }
+    public enum EstadoArqueo { ABIERTO, PRECIERRE, CERRADO }
 
     public Long getId() { return id; }
     public Long getCajeroId() { return cajeroId; }

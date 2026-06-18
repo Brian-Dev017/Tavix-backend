@@ -5,6 +5,7 @@ import com.restaurante.modules.caja.infrastructure.persistence.ComprobanteEntity
 import com.restaurante.modules.caja.infrastructure.persistence.ArqueoEntity;
 import com.restaurante.modules.caja.infrastructure.persistence.ArqueoJpaRepo;
 import com.restaurante.modules.caja.infrastructure.persistence.DatosComprobanteJpaRepo;
+import com.restaurante.modules.caja.infrastructure.web.dto.DatosComprobanteRequest;
 import com.restaurante.modules.caja.infrastructure.web.dto.EmitirComprobanteRequest;
 import com.restaurante.modules.configuracion.infrastructure.persistence.SerieComprobanteEntity;
 import com.restaurante.modules.configuracion.infrastructure.persistence.SerieComprobanteJpaRepo;
@@ -200,5 +201,62 @@ class CajaServiceTest {
 
         assertEquals(HttpStatus.FORBIDDEN, exception.getStatus());
         assertEquals("Solo un administrador puede aplicar descuentos", exception.getMessage());
+    }
+
+    @Test
+    void emitirBoletaRechazaDniConLetras() {
+        prepararPedidoListo(8L);
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> service.emitirComprobante(2L, false,
+                        new EmitirComprobanteRequest(
+                                8L, "B", "EFECTIVO",
+                                new DatosComprobanteRequest("1234567A", "Juan Perez", ""),
+                                null, null, new BigDecimal("30.00")),
+                        null));
+
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatus());
+        assertEquals("Boleta requiere DNI de 8 digitos, nombre y apellido; no lleva direccion",
+                exception.getMessage());
+    }
+
+    @Test
+    void emitirBoletaRechazaNombreConNumeros() {
+        prepararPedidoListo(8L);
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> service.emitirComprobante(2L, false,
+                        new EmitirComprobanteRequest(
+                                8L, "B", "EFECTIVO",
+                                new DatosComprobanteRequest("12345678", "Juan P3rez", ""),
+                                null, null, new BigDecimal("30.00")),
+                        null));
+
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatus());
+    }
+
+    @Test
+    void emitirFacturaRechazaRucConLetras() {
+        prepararPedidoListo(8L);
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> service.emitirComprobante(2L, false,
+                        new EmitirComprobanteRequest(
+                                8L, "F", "EFECTIVO",
+                                new DatosComprobanteRequest(
+                                        "2012345678A", "Empresa Prueba SAC", "Av. Principal 123"),
+                                null, null, new BigDecimal("30.00")),
+                        null));
+
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatus());
+        assertEquals("Factura requiere RUC de 11 digitos, razon social y direccion",
+                exception.getMessage());
+    }
+
+    private void prepararPedidoListo(Long pedidoId) {
+        PedidoEntity pedido = new PedidoEntity();
+        pedido.setEstado(PedidoEntity.EstadoPedido.LISTO);
+        when(comprobanteRepo.findByPedidoId(pedidoId)).thenReturn(Optional.empty());
+        when(pedidoRepo.findById(pedidoId)).thenReturn(Optional.of(pedido));
     }
 }

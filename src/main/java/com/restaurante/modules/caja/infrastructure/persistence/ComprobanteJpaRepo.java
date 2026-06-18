@@ -19,6 +19,9 @@ public interface ComprobanteJpaRepo extends JpaRepository<ComprobanteEntity, Lon
             ComprobanteEntity.EstadoComprobante estado,
             LocalDateTime desde,
             LocalDateTime hasta);
+    List<ComprobanteEntity> findByArqueoCajaIdAndEstado(
+            Long arqueoCajaId,
+            ComprobanteEntity.EstadoComprobante estado);
     List<ComprobanteEntity> findByTipoComprobanteIdInAndEstadoOrderByPagadoEnDesc(
             List<String> tipos,
             ComprobanteEntity.EstadoComprobante estado);

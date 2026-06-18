@@ -11,5 +11,5 @@ public interface ArqueoJpaRepo extends JpaRepository<ArqueoEntity, Long> {
     Optional<ArqueoEntity> findTopByEstadoOrderByAperturaEnDesc(ArqueoEntity.EstadoArqueo estado);
     Optional<ArqueoEntity> findTopByCajeroIdAndEstadoOrderByAperturaEnDesc(Long cajeroId, ArqueoEntity.EstadoArqueo estado);
     List<ArqueoEntity> findByEstadoOrderByAperturaEnDesc(ArqueoEntity.EstadoArqueo estado);
-    boolean existsByCajeroIdAndAperturaEnBetween(Long cajeroId, LocalDateTime desde, LocalDateTime hasta);
+    long countByCajeroIdAndAperturaEnBetween(Long cajeroId, LocalDateTime desde, LocalDateTime hasta);
 }
