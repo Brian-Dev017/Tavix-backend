@@ -5,6 +5,7 @@ import com.restaurante.modules.pedidos.infrastructure.persistence.DetallePedidoE
 import com.restaurante.modules.pedidos.infrastructure.persistence.DetallePedidoJpaRepo;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoEntity;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoJpaRepo;
+import com.restaurante.modules.pedidos.infrastructure.ws.PedidoEventPublisher;
 import com.restaurante.shared.exception.BusinessException;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
@@ -14,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class CocinaService {
@@ -23,10 +25,13 @@ public class CocinaService {
 
     private final DetallePedidoJpaRepo detalleRepo;
     private final PedidoJpaRepo pedidoRepo;
+    private final PedidoEventPublisher eventPublisher;
 
-    public CocinaService(DetallePedidoJpaRepo detalleRepo, PedidoJpaRepo pedidoRepo) {
+    public CocinaService(DetallePedidoJpaRepo detalleRepo, PedidoJpaRepo pedidoRepo,
+                         PedidoEventPublisher eventPublisher) {
         this.detalleRepo = detalleRepo;
         this.pedidoRepo = pedidoRepo;
+        this.eventPublisher = eventPublisher;
     }
 
     @SuppressWarnings("unchecked")
@@ -67,6 +72,7 @@ public class CocinaService {
         detalle.setEstado(estado);
         detalleRepo.save(detalle);
         actualizarPedidoSiCorresponde(detalle.getPedidoId());
+        publicarCambioPedido(detalle, "ITEM_ESTADO_ACTUALIZADO");
     }
 
     @Transactional
@@ -87,6 +93,7 @@ public class CocinaService {
         detalle.setCanceladoEn(LocalDateTime.now());
         detalleRepo.save(detalle);
         actualizarPedidoSiCorresponde(detalle.getPedidoId());
+        publicarCambioPedido(detalle, "ITEM_CANCELADO");
     }
 
     private boolean esTransicionValida(DetallePedidoEntity.EstadoDetalle actual,
@@ -95,6 +102,15 @@ public class CocinaService {
                     && destino == DetallePedidoEntity.EstadoDetalle.EN_PREPARACION)
                 || (actual == DetallePedidoEntity.EstadoDetalle.EN_PREPARACION
                     && destino == DetallePedidoEntity.EstadoDetalle.LISTO);
+    }
+
+    private void publicarCambioPedido(DetallePedidoEntity detalle, String evento) {
+        eventPublisher.publicarPedidoEvento(Map.of(
+                "evento", evento,
+                "pedidoId", detalle.getPedidoId(),
+                "detalleId", detalle.getId(),
+                "estadoItem", detalle.getEstado().name()
+        ));
     }
 
     private void actualizarPedidoSiCorresponde(Long pedidoId) {

@@ -30,7 +30,9 @@ import java.math.BigDecimal;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -114,6 +116,44 @@ class PedidoServiceTest {
     }
 
     @Test
+    void agregarBebidaFriaQuedaListaYNoSePublicaEnCocina() {
+        PedidoEntity pedido = new PedidoEntity();
+        ReflectionTestUtils.setField(pedido, "id", 3L);
+        pedido.setSesionMesaId(7L);
+        SesionMesaEntity sesion = new SesionMesaEntity();
+        sesion.setMeseroId(1L);
+        ProductoEntity producto = new ProductoEntity();
+        producto.setNombre("Limonada");
+        producto.setPrecio(new BigDecimal("8.50"));
+        producto.setRequiereCocina(false);
+
+        when(pedidoRepo.findById(3L)).thenReturn(Optional.of(pedido));
+        when(sesionRepo.findById(7L)).thenReturn(Optional.of(sesion));
+        when(productoRepo.findById(11L)).thenReturn(Optional.of(producto));
+        when(detalleRepo.save(any(DetallePedidoEntity.class))).thenAnswer(invocation -> {
+            DetallePedidoEntity detalle = invocation.getArgument(0);
+            ReflectionTestUtils.setField(detalle, "id", 100L);
+            return detalle;
+        });
+        DetallePedidoEntity listo = new DetallePedidoEntity();
+        listo.setEstado(DetallePedidoEntity.EstadoDetalle.LISTO);
+        when(detalleRepo.findByPedidoId(3L)).thenReturn(List.of(listo));
+        when(pedidoRepo.save(any(PedidoEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.agregarItem(
+                3L,
+                new AgregarItemRequest(11L, 2, "con hielo"),
+                1L,
+                true,
+                false,
+                contexto
+        );
+
+        assertEquals(PedidoEntity.EstadoPedido.LISTO, pedido.getEstado());
+        verify(eventPublisher, never()).publicarNuevoItem(any());
+    }
+
+    @Test
     void agregarItemParaLlevarNoEnviaACocinaAntesDelCobro() {
         PedidoEntity pedido = new PedidoEntity();
         pedido.setSesionMesaId(7L);
@@ -141,5 +181,27 @@ class PedidoServiceTest {
         assertEquals(PedidoEntity.EstadoPedido.ABIERTO, pedido.getEstado());
         verify(pedidoRepo, never()).save(pedido);
         verify(eventPublisher, never()).publicarNuevoItem(any());
+    }
+
+    @Test
+    void mesaParaLlevarDisponiblePermiteAccesoDesdeCaja() {
+        MesaEntity mesa = new MesaEntity();
+        mesa.setTipo(MesaEntity.TipoMesa.PARA_LLEVAR);
+        mesa.setEstado(MesaEntity.EstadoMesa.DISPONIBLE);
+        when(mesaRepo.findFirstByTipo(MesaEntity.TipoMesa.PARA_LLEVAR))
+                .thenReturn(Optional.of(mesa));
+
+        assertTrue(service.mesaParaLlevarDisponible());
+    }
+
+    @Test
+    void mesaParaLlevarInactivaBloqueaAccesoDesdeCaja() {
+        MesaEntity mesa = new MesaEntity();
+        mesa.setTipo(MesaEntity.TipoMesa.PARA_LLEVAR);
+        mesa.setEstado(MesaEntity.EstadoMesa.INACTIVA);
+        when(mesaRepo.findFirstByTipo(MesaEntity.TipoMesa.PARA_LLEVAR))
+                .thenReturn(Optional.of(mesa));
+
+        assertFalse(service.mesaParaLlevarDisponible());
     }
 }

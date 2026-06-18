@@ -6,6 +6,8 @@ import com.restaurante.modules.caja.infrastructure.persistence.ArqueoEntity;
 import com.restaurante.modules.caja.infrastructure.persistence.ArqueoJpaRepo;
 import com.restaurante.modules.caja.infrastructure.persistence.ComprobanteEntity;
 import com.restaurante.modules.caja.infrastructure.persistence.ComprobanteJpaRepo;
+import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoEntity;
+import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoJpaRepo;
 import com.restaurante.shared.exception.BusinessException;
 import com.restaurante.shared.response.ApiResponse;
 import org.springframework.http.HttpStatus;
@@ -26,15 +28,18 @@ public class ArqueoController {
     private final ComprobanteJpaRepo comprobanteRepo;
     private final UsuarioJpaRepo usuarioRepo;
     private final PasswordEncoder passwordEncoder;
+    private final PedidoJpaRepo pedidoRepo;
 
     public ArqueoController(ArqueoJpaRepo arqueoRepo,
                             ComprobanteJpaRepo comprobanteRepo,
                             UsuarioJpaRepo usuarioRepo,
-                            PasswordEncoder passwordEncoder) {
+                            PasswordEncoder passwordEncoder,
+                            PedidoJpaRepo pedidoRepo) {
         this.arqueoRepo = arqueoRepo;
         this.comprobanteRepo = comprobanteRepo;
         this.usuarioRepo = usuarioRepo;
         this.passwordEncoder = passwordEncoder;
+        this.pedidoRepo = pedidoRepo;
     }
 
     // ──────────────── DTOs ────────────────
@@ -133,6 +138,18 @@ public class ArqueoController {
         }
         if (arqueo.getEstado() == ArqueoEntity.EstadoArqueo.CERRADO) {
             throw new BusinessException("El arqueo ya esta cerrado", HttpStatus.CONFLICT);
+        }
+        long pagosPendientes = pedidoRepo.countByEstadoIn(List.of(
+                PedidoEntity.EstadoPedido.ABIERTO,
+                PedidoEntity.EstadoPedido.EN_COCINA,
+                PedidoEntity.EstadoPedido.LISTO
+        ));
+        if (pagosPendientes > 0) {
+            throw new BusinessException(
+                    "No se puede registrar el pre-cierre porque existen "
+                            + pagosPendientes + " pagos pendientes",
+                    HttpStatus.CONFLICT
+            );
         }
         validarCredencialesPrecierre(req, usuarioAuthId);
 

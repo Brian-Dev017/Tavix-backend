@@ -12,15 +12,22 @@ import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 @Component
 public class StompAuthChannelInterceptor implements ChannelInterceptor {
 
-    private static final Set<String> ALLOWED_ROLES = Set.of("AD", "CO");
+    private static final Set<String> ALLOWED_ROLES = Set.of("AD", "ME", "CO", "CA");
+    private static final Map<String, Set<String>> TOPIC_ROLES = Map.of(
+            "/topic/cocina", Set.of("AD", "CO"),
+            "/topic/pedidos", Set.of("AD", "ME", "CO", "CA"),
+            "/topic/ventas", Set.of("AD", "CA")
+    );
 
     private final JwtTokenProvider jwtTokenProvider;
 
@@ -44,7 +51,7 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
             Claims claims = jwtTokenProvider.parseToken(token);
             String rol = claims.get("rol", String.class);
             if (rol == null || !ALLOWED_ROLES.contains(rol)) {
-                throw new AccessDeniedException("Rol sin acceso a cocina");
+                throw new AccessDeniedException("Rol sin acceso a tiempo real");
             }
 
             var authentication = new UsernamePasswordAuthenticationToken(
@@ -55,10 +62,18 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
             accessor.setUser(authentication);
         }
 
-        if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())
-                && "/topic/cocina".equals(accessor.getDestination())
-                && accessor.getUser() == null) {
-            throw new AccessDeniedException("Suscripción no autenticada");
+        if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
+            String destination = accessor.getDestination();
+            Set<String> allowed = TOPIC_ROLES.get(destination);
+            if (!(accessor.getUser() instanceof Authentication authentication) || allowed == null) {
+                throw new AccessDeniedException("Suscripcion no autenticada o destino no permitido");
+            }
+            boolean authorized = authentication.getAuthorities().stream()
+                    .map(authority -> authority.getAuthority().replaceFirst("^ROLE_", ""))
+                    .anyMatch(allowed::contains);
+            if (!authorized) {
+                throw new AccessDeniedException("Rol sin acceso al canal " + destination);
+            }
         }
 
         return message;

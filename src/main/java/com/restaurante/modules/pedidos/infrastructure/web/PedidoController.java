@@ -58,6 +58,14 @@ public class PedidoController {
         return ResponseEntity.ok(ApiResponse.ok("Pedido para llevar creado", Map.of("id", id)));
     }
 
+    @GetMapping("/para-llevar/disponibilidad")
+    public ResponseEntity<ApiResponse<Map<String, Boolean>>> disponibilidadParaLlevar() {
+        return ResponseEntity.ok(ApiResponse.ok(Map.of(
+                "disponible",
+                pedidoService.mesaParaLlevarDisponible()
+        )));
+    }
+
     @PostMapping("/{id}/items")
     public ResponseEntity<ApiResponse<ItemPedidoDTO>> agregarItem(
             @PathVariable Long id,

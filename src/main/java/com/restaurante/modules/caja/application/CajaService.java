@@ -485,7 +485,6 @@ public class CajaService {
         lines.add(center("Cliente: Mostrador"));
         lines.add("");
         lines.add(center(repeat("-", 24)));
-        lines.add(center("Impresora termica 80mm"));
         agregarItemsTicket(lines, items);
         lines.add(center(repeat("-", 24)));
         lines.add(row("Total", money(comp.getTotal())));
@@ -549,9 +548,6 @@ public class CajaService {
             wrap(item.productoNombre(), TICKET_WIDTH).forEach(lines::add);
             String cantidadPrecio = item.cantidad() + " x " + money(item.precio());
             lines.add(row(cantidadPrecio, money(item.subtotal())));
-            if (!estaVacio(item.observaciones())) {
-                wrap("Obs: " + item.observaciones(), TICKET_WIDTH).forEach(line -> lines.add("  " + line.trim()));
-            }
             lines.add(repeat("-", TICKET_WIDTH));
         }
     }

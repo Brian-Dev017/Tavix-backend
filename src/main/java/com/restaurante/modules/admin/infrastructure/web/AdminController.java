@@ -15,6 +15,7 @@ import com.restaurante.modules.mesas.infrastructure.persistence.MesaEntity;
 import com.restaurante.modules.mesas.infrastructure.persistence.MesaJpaRepo;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoEntity;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoJpaRepo;
+import com.restaurante.modules.pedidos.infrastructure.persistence.DetallePedidoJpaRepo;
 import com.restaurante.shared.audit.AuditoriaContexto;
 import com.restaurante.shared.audit.AuditoriaContextoFactory;
 import com.restaurante.shared.audit.AuditoriaGlobalService;
@@ -28,8 +29,10 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
+import java.text.Normalizer;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -46,6 +49,7 @@ public class AdminController {
     private final PedidoJpaRepo pedidoRepo;
     private final ComprobanteJpaRepo comprobanteRepo;
     private final MesaService mesaService;
+    private final DetallePedidoJpaRepo detallePedidoRepo;
     private final RefreshTokenRepositoryPort refreshTokenRepo;
     private final PasswordEncoder passwordEncoder;
     private final AuditoriaGlobalService auditoriaGlobalService;
@@ -55,6 +59,7 @@ public class AdminController {
                            CategoriaJpaRepo categoriaRepo, MesaJpaRepo mesaRepo,
                            PedidoJpaRepo pedidoRepo, ComprobanteJpaRepo comprobanteRepo,
                            MesaService mesaService,
+                           DetallePedidoJpaRepo detallePedidoRepo,
                            RefreshTokenRepositoryPort refreshTokenRepo,
                            PasswordEncoder passwordEncoder,
                            AuditoriaGlobalService auditoriaGlobalService,
@@ -66,6 +71,7 @@ public class AdminController {
         this.pedidoRepo = pedidoRepo;
         this.comprobanteRepo = comprobanteRepo;
         this.mesaService = mesaService;
+        this.detallePedidoRepo = detallePedidoRepo;
         this.refreshTokenRepo = refreshTokenRepo;
         this.passwordEncoder = passwordEncoder;
         this.auditoriaGlobalService = auditoriaGlobalService;
@@ -232,6 +238,7 @@ public class AdminController {
     public ResponseEntity<ApiResponse<ProductoAdminDTO>> crearProducto(@RequestBody GuardarProductoRequest req,
                                                                        Authentication auth,
                                                                        HttpServletRequest httpRequest) {
+        validarProducto(req);
         String catNombre = categoriaRepo.findById(req.categoriaId())
                 .map(CategoriaEntity::getNombre)
                 .orElseThrow(() -> new BusinessException("Categoria no encontrada", HttpStatus.NOT_FOUND));
@@ -242,6 +249,7 @@ public class AdminController {
         p.setPrecio(req.precio());
         p.setImagenUrl(req.imagenUrl());
         p.setDisponible(req.disponible());
+        p.setRequiereCocina(requiereCocina(catNombre));
         ProductoEntity saved = productoRepo.save(p);
         registrar("producto", saved.getId(), "CREAR", "Creacion de producto", null, saved, auth, httpRequest);
         return ResponseEntity.ok(ApiResponse.ok(new ProductoAdminDTO(saved.getId(), saved.getCategoriaId(),
@@ -258,6 +266,7 @@ public class AdminController {
         if (!p.isDisponible()) {
             throw new BusinessException("No se puede editar un producto no disponible", HttpStatus.CONFLICT);
         }
+        validarProducto(req);
         String catNombre = categoriaRepo.findById(req.categoriaId())
                 .map(CategoriaEntity::getNombre)
                 .orElseThrow(() -> new BusinessException("Categoria no encontrada", HttpStatus.NOT_FOUND));
@@ -268,6 +277,7 @@ public class AdminController {
         p.setPrecio(req.precio());
         p.setImagenUrl(req.imagenUrl());
         p.setDisponible(req.disponible());
+        p.setRequiereCocina(requiereCocina(catNombre));
         ProductoEntity saved = productoRepo.save(p);
         registrar("producto", saved.getId(), "ACTUALIZAR", "Actualizacion de producto",
                 antes, snapshotProducto(saved), auth, httpRequest);
@@ -296,12 +306,44 @@ public class AdminController {
                                                               HttpServletRequest httpRequest) {
         ProductoEntity producto = productoRepo.findById(id)
                 .orElseThrow(() -> new BusinessException("Producto no encontrado", HttpStatus.NOT_FOUND));
+        if (detallePedidoRepo.existsByProductoId(id)) {
+            throw new BusinessException(
+                    "No se puede eliminar el producto porque tiene pedidos registrados",
+                    HttpStatus.CONFLICT
+            );
+        }
         Map<String, Object> antes = snapshotProducto(producto);
-        producto.setDisponible(false);
-        productoRepo.save(producto);
-        registrar("producto", producto.getId(), "ELIMINAR_LOGICO", "Desactivacion de producto",
-                antes, snapshotProducto(producto), auth, httpRequest);
-        return ResponseEntity.ok(ApiResponse.ok("Producto desactivado", null));
+        productoRepo.delete(producto);
+        registrar("producto", producto.getId(), "ELIMINAR", "Eliminacion de producto",
+                antes, null, auth, httpRequest);
+        return ResponseEntity.ok(ApiResponse.ok("Producto eliminado", null));
+    }
+
+    private void validarProducto(GuardarProductoRequest req) {
+        if (req == null) {
+            throw new BusinessException("Los datos del producto son obligatorios", HttpStatus.BAD_REQUEST);
+        }
+        if (req.categoriaId() == null) {
+            throw new BusinessException("La categoria es obligatoria", HttpStatus.BAD_REQUEST);
+        }
+        if (req.nombre() == null || req.nombre().isBlank()) {
+            throw new BusinessException("El nombre del producto es obligatorio", HttpStatus.BAD_REQUEST);
+        }
+        if (req.precio() == null || req.precio().signum() <= 0) {
+            throw new BusinessException("El precio debe ser mayor a cero", HttpStatus.BAD_REQUEST);
+        }
+        if (req.precio().scale() > 2) {
+            throw new BusinessException("El precio debe tener como maximo dos decimales", HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    private boolean requiereCocina(String categoria) {
+        String normalizada = Normalizer.normalize(categoria, Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "")
+                .trim()
+                .replaceAll("\\s+", " ")
+                .toLowerCase(Locale.ROOT);
+        return !"bebidas frias".equals(normalizada);
     }
 
     public record ComprobanteAnulacionDTO(
@@ -477,14 +519,11 @@ public class AdminController {
             Authentication auth, HttpServletRequest httpRequest) {
         MesaEntity mesa = mesaRepo.findById(id)
                 .orElseThrow(() -> new BusinessException("Mesa no encontrada", HttpStatus.NOT_FOUND));
-        if (mesa.isParaLlevar()) {
-            throw new BusinessException("La mesa para llevar es exclusiva de caja", HttpStatus.CONFLICT);
-        }
         if (mesa.getEstado() == MesaEntity.EstadoMesa.OCUPADA) {
             throw new BusinessException("No se puede editar una mesa ocupada", HttpStatus.CONFLICT);
         }
         Map<String, Object> antes = snapshotMesa(mesa);
-        if (req.numero() != null && !req.numero().isBlank()) {
+        if (!mesa.isParaLlevar() && req.numero() != null && !req.numero().isBlank()) {
             String nuevoNum = req.numero().toUpperCase();
             boolean duplicado = mesaRepo.findAll().stream()
                     .anyMatch(m -> !m.getId().equals(id) && m.getNumero().equalsIgnoreCase(nuevoNum));
@@ -507,9 +546,6 @@ public class AdminController {
                                                                       HttpServletRequest httpRequest) {
         MesaEntity mesa = mesaRepo.findById(id)
                 .orElseThrow(() -> new BusinessException("Mesa no encontrada", HttpStatus.NOT_FOUND));
-        if (mesa.isParaLlevar()) {
-            throw new BusinessException("La mesa para llevar es exclusiva de caja", HttpStatus.CONFLICT);
-        }
         if (mesa.getEstado() == MesaEntity.EstadoMesa.OCUPADA
                 || mesa.getEstado() == MesaEntity.EstadoMesa.RESERVADA) {
             throw new BusinessException("No se puede cambiar el estado de una mesa ocupada o reservada", HttpStatus.CONFLICT);
@@ -533,7 +569,7 @@ public class AdminController {
         MesaEntity mesa = mesaRepo.findById(id)
                 .orElseThrow(() -> new BusinessException("Mesa no encontrada", HttpStatus.NOT_FOUND));
         if (mesa.isParaLlevar()) {
-            throw new BusinessException("La mesa para llevar es exclusiva de caja", HttpStatus.CONFLICT);
+            throw new BusinessException("La mesa para llevar no puede eliminarse", HttpStatus.CONFLICT);
         }
         if (mesa.getEstado() == MesaEntity.EstadoMesa.OCUPADA) {
             throw new BusinessException("No se puede eliminar una mesa ocupada", HttpStatus.CONFLICT);

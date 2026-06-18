@@ -7,6 +7,7 @@ import com.restaurante.modules.mesas.infrastructure.persistence.SesionMesaJpaRep
 import com.restaurante.modules.mesas.infrastructure.web.dto.MesaDTO;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoEntity;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoJpaRepo;
+import com.restaurante.modules.pedidos.infrastructure.ws.PedidoEventPublisher;
 import com.restaurante.modules.auth.infrastructure.persistence.UsuarioJpaRepo;
 import com.restaurante.shared.exception.BusinessException;
 import org.springframework.http.HttpStatus;
@@ -15,6 +16,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @Service
@@ -24,13 +26,16 @@ public class MesaService {
     private final SesionMesaJpaRepo sesionRepo;
     private final PedidoJpaRepo pedidoRepo;
     private final UsuarioJpaRepo usuarioRepo;
+    private final PedidoEventPublisher eventPublisher;
 
     public MesaService(MesaJpaRepo mesaRepo, SesionMesaJpaRepo sesionRepo,
-                       PedidoJpaRepo pedidoRepo, UsuarioJpaRepo usuarioRepo) {
+                       PedidoJpaRepo pedidoRepo, UsuarioJpaRepo usuarioRepo,
+                       PedidoEventPublisher eventPublisher) {
         this.mesaRepo = mesaRepo;
         this.sesionRepo = sesionRepo;
         this.pedidoRepo = pedidoRepo;
         this.usuarioRepo = usuarioRepo;
+        this.eventPublisher = eventPublisher;
     }
 
     public List<MesaDTO> listarMesas() {
@@ -75,6 +80,13 @@ public class MesaService {
         mesa.setEstado(MesaEntity.EstadoMesa.OCUPADA);
         mesaRepo.save(mesa);
 
+        eventPublisher.publicarPedidoEvento(Map.of(
+                "evento", "MESA_ABIERTA",
+                "mesaId", mesa.getId(),
+                "mesa", mesa.getNumero(),
+                "sesionId", sesion.getId(),
+                "meseroId", meseroId
+        ));
         return sesion.getId();
     }
 
@@ -118,6 +130,12 @@ public class MesaService {
         mesaRepo.findById(sesion.getMesaId()).ifPresent(mesa -> {
             mesa.setEstado(MesaEntity.EstadoMesa.DISPONIBLE);
             mesaRepo.save(mesa);
+            eventPublisher.publicarPedidoEvento(Map.of(
+                    "evento", "MESA_LIBERADA",
+                    "mesaId", mesa.getId(),
+                    "mesa", mesa.getNumero(),
+                    "sesionId", sesionId
+            ));
         });
     }
 

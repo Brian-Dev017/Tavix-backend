@@ -12,17 +12,30 @@ import com.restaurante.modules.pedidos.infrastructure.persistence.DetallePedidoJ
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoEntity;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoJpaRepo;
 import com.restaurante.shared.response.ApiResponse;
+import com.restaurante.shared.exception.BusinessException;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.ss.util.CellRangeAddress;
+import org.apache.poi.xddf.usermodel.chart.*;
+import org.apache.poi.xssf.usermodel.XSSFChart;
+import org.apache.poi.xssf.usermodel.XSSFDrawing;
+import org.apache.poi.xssf.usermodel.XSSFSheet;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -33,6 +46,9 @@ import java.util.stream.Collectors;
 @RestController
 @RequestMapping("/api/reportes")
 public class ReportesController {
+
+    private static final String XLSX_MIME =
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
     private final ComprobanteJpaRepo comprobanteRepo;
     private final PedidoJpaRepo pedidoRepo;
@@ -125,6 +141,8 @@ public class ReportesController {
             List<VentaPorCategoria> ventasPorCategoria
     ) {}
 
+    private record DateRange(LocalDate desde, LocalDate hasta) {}
+
     // ──────────────── GET /ventas ────────────────
 
     @GetMapping("/ventas")
@@ -132,8 +150,9 @@ public class ReportesController {
             @RequestParam(required = false) String desde,
             @RequestParam(required = false) String hasta) {
 
-        LocalDate desdeDate = desde != null ? LocalDate.parse(desde.substring(0, 10)) : LocalDate.now();
-        LocalDate hastaDate = hasta != null ? LocalDate.parse(hasta.substring(0, 10)) : LocalDate.now();
+        DateRange range = parseDateRange(desde, hasta);
+        LocalDate desdeDate = range.desde();
+        LocalDate hastaDate = range.hasta();
         LocalDateTime desdeTime = desdeDate.atStartOfDay();
         LocalDateTime hastaTime = hastaDate.atTime(LocalTime.MAX);
 
@@ -226,8 +245,9 @@ public class ReportesController {
     public ResponseEntity<ApiResponse<DashboardResponse>> dashboard(
             @RequestParam(required = false) String desde,
             @RequestParam(required = false) String hasta) {
-        LocalDate desdeDate = desde != null ? LocalDate.parse(desde.substring(0, 10)) : LocalDate.now();
-        LocalDate hastaDate = hasta != null ? LocalDate.parse(hasta.substring(0, 10)) : LocalDate.now();
+        DateRange range = parseDateRange(desde, hasta);
+        LocalDate desdeDate = range.desde();
+        LocalDate hastaDate = range.hasta();
         LocalDateTime inicioDia = desdeDate.atStartOfDay();
         LocalDateTime finDia = hastaDate.atTime(LocalTime.MAX);
 
@@ -374,5 +394,359 @@ public class ReportesController {
             case "F" -> "Factura";
             default -> "Ticket";
         };
+    }
+
+    @GetMapping("/dashboard/excel")
+    public ResponseEntity<byte[]> exportarDashboardExcel(
+            @RequestParam String desde,
+            @RequestParam String hasta) {
+        DateRange range = parseDateRange(desde, hasta);
+        DashboardResponse data = Objects.requireNonNull(
+                dashboard(desde, hasta).getBody()
+        ).data();
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            CellStyle title = titleStyle(workbook);
+            CellStyle header = headerStyle(workbook);
+            CellStyle money = moneyStyle(workbook);
+            createSummarySheet(
+                    workbook,
+                    title,
+                    header,
+                    money,
+                    "REPORTE DE DASHBOARD",
+                    range,
+                    List.of(
+                            new Object[]{"Ventas", data.ventasHoy()},
+                            new Object[]{"Pedidos", data.pedidosHoy()}
+                    )
+            );
+            createTableSheet(
+                    workbook, title, header, money, "Ventas por día", range,
+                    new String[]{"Fecha", "Comprobantes", "Total"},
+                    data.ventasPorDia().stream()
+                            .map(row -> new Object[]{row.fecha(), row.cantidad(), row.total()})
+                            .toList(),
+                    2, ChartTypes.BAR, "Ventas por día"
+            );
+            createTableSheet(
+                    workbook, title, header, money, "Métodos de pago", range,
+                    new String[]{"Método", "Transacciones", "Total"},
+                    data.ventasPorMetodo().stream()
+                            .map(row -> new Object[]{row.metodo(), row.cantidad(), row.total()})
+                            .toList(),
+                    2, ChartTypes.PIE, "Distribución de pagos"
+            );
+            createTableSheet(
+                    workbook, title, header, money, "Categorías", range,
+                    new String[]{"Categoría", "Cantidad", "Total"},
+                    data.ventasPorCategoria().stream()
+                            .map(row -> new Object[]{row.categoria(), row.cantidad(), row.total()})
+                            .toList(),
+                    2, ChartTypes.PIE, "Ventas por categoría"
+            );
+            createTableSheet(
+                    workbook, title, header, money, "Platos", range,
+                    new String[]{"Producto", "Cantidad"},
+                    data.platosVendidos().stream()
+                            .map(row -> new Object[]{row.nombre(), row.cantidad()})
+                            .toList(),
+                    1, ChartTypes.BAR, "Platos más vendidos"
+            );
+            return excelResponse(
+                    workbook,
+                    "dashboard-" + range.desde() + "-" + range.hasta() + ".xlsx"
+            );
+        } catch (IOException error) {
+            throw new BusinessException(
+                    "No se pudo generar el Excel del dashboard",
+                    HttpStatus.INTERNAL_SERVER_ERROR
+            );
+        }
+    }
+
+    @GetMapping("/ventas/excel")
+    public ResponseEntity<byte[]> exportarVentasExcel(
+            @RequestParam String desde,
+            @RequestParam String hasta) {
+        DateRange range = parseDateRange(desde, hasta);
+        ReporteVentasResponse data = Objects.requireNonNull(
+                ventas(desde, hasta).getBody()
+        ).data();
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            CellStyle title = titleStyle(workbook);
+            CellStyle header = headerStyle(workbook);
+            CellStyle money = moneyStyle(workbook);
+            createSummarySheet(
+                    workbook,
+                    title,
+                    header,
+                    money,
+                    "REPORTE DE VENTAS",
+                    range,
+                    List.of(
+                            new Object[]{"Total de ventas", data.totalVentas()},
+                            new Object[]{"Comprobantes", data.cantidadComprobantes()},
+                            new Object[]{"Ticket promedio", data.promedioVenta()}
+                    )
+            );
+            createTableSheet(
+                    workbook, title, header, money, "Ventas por día", range,
+                    new String[]{"Fecha", "Comprobantes", "Total"},
+                    data.ventasPorDia().stream()
+                            .map(row -> new Object[]{row.fecha(), row.cantidad(), row.total()})
+                            .toList(),
+                    2, ChartTypes.BAR, "Ventas por día"
+            );
+            createTableSheet(
+                    workbook, title, header, money, "Métodos de pago", range,
+                    new String[]{"Método", "Transacciones", "Total"},
+                    data.ventasPorMetodo().stream()
+                            .map(row -> new Object[]{row.metodo(), row.cantidad(), row.total()})
+                            .toList(),
+                    2, ChartTypes.PIE, "Distribución de pagos"
+            );
+            return excelResponse(
+                    workbook,
+                    "ventas-" + range.desde() + "-" + range.hasta() + ".xlsx"
+            );
+        } catch (IOException error) {
+            throw new BusinessException(
+                    "No se pudo generar el Excel de ventas",
+                    HttpStatus.INTERNAL_SERVER_ERROR
+            );
+        }
+    }
+
+    private DateRange parseDateRange(String desde, String hasta) {
+        try {
+            LocalDate start = desde == null || desde.isBlank()
+                    ? LocalDate.now()
+                    : LocalDate.parse(desde.substring(0, 10));
+            LocalDate end = hasta == null || hasta.isBlank()
+                    ? LocalDate.now()
+                    : LocalDate.parse(hasta.substring(0, 10));
+            LocalDate today = LocalDate.now();
+            if (start.isAfter(end)) {
+                throw new BusinessException(
+                        "La fecha desde no puede ser mayor que la fecha hasta",
+                        HttpStatus.BAD_REQUEST
+                );
+            }
+            if (start.isAfter(today) || end.isAfter(today)) {
+                throw new BusinessException(
+                        "La fecha de consulta no puede ser posterior a hoy",
+                        HttpStatus.BAD_REQUEST
+                );
+            }
+            return new DateRange(start, end);
+        } catch (BusinessException error) {
+            throw error;
+        } catch (RuntimeException error) {
+            throw new BusinessException(
+                    "El rango de fechas no tiene un formato válido",
+                    HttpStatus.BAD_REQUEST
+            );
+        }
+    }
+
+    private CellStyle titleStyle(Workbook workbook) {
+        CellStyle style = workbook.createCellStyle();
+        Font font = workbook.createFont();
+        font.setBold(true);
+        font.setColor(IndexedColors.WHITE.getIndex());
+        font.setFontHeightInPoints((short) 14);
+        style.setFont(font);
+        style.setFillForegroundColor(IndexedColors.ROSE.getIndex());
+        style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+        style.setAlignment(HorizontalAlignment.CENTER);
+        return style;
+    }
+
+    private CellStyle headerStyle(Workbook workbook) {
+        CellStyle style = workbook.createCellStyle();
+        Font font = workbook.createFont();
+        font.setBold(true);
+        font.setColor(IndexedColors.WHITE.getIndex());
+        style.setFont(font);
+        style.setFillForegroundColor(IndexedColors.DARK_BLUE.getIndex());
+        style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+        style.setAlignment(HorizontalAlignment.CENTER);
+        return style;
+    }
+
+    private CellStyle moneyStyle(Workbook workbook) {
+        CellStyle style = workbook.createCellStyle();
+        style.setDataFormat(workbook.createDataFormat().getFormat("S/ #,##0.00"));
+        return style;
+    }
+
+    private void createSummarySheet(
+            XSSFWorkbook workbook,
+            CellStyle title,
+            CellStyle header,
+            CellStyle money,
+            String reportTitle,
+            DateRange range,
+            List<Object[]> values) {
+        XSSFSheet sheet = workbook.createSheet("Resumen");
+        Row titleRow = sheet.createRow(0);
+        Cell titleCell = titleRow.createCell(0);
+        titleCell.setCellValue(reportTitle);
+        titleCell.setCellStyle(title);
+        sheet.addMergedRegion(new CellRangeAddress(0, 0, 0, 2));
+        Row rangeRow = sheet.createRow(1);
+        rangeRow.createCell(0).setCellValue("Desde");
+        rangeRow.createCell(1).setCellValue(range.desde().toString());
+        rangeRow.createCell(2).setCellValue("Hasta: " + range.hasta());
+        Row headers = sheet.createRow(3);
+        headers.createCell(0).setCellValue("Indicador");
+        headers.createCell(1).setCellValue("Valor");
+        headers.getCell(0).setCellStyle(header);
+        headers.getCell(1).setCellStyle(header);
+        int rowIndex = 4;
+        for (Object[] value : values) {
+            Row row = sheet.createRow(rowIndex++);
+            writeCell(row.createCell(0), value[0], money);
+            writeCell(row.createCell(1), value[1], money);
+        }
+        sheet.setColumnWidth(0, 28 * 256);
+        sheet.setColumnWidth(1, 20 * 256);
+        sheet.setColumnWidth(2, 20 * 256);
+        sheet.createFreezePane(0, 4);
+    }
+
+    private void createTableSheet(
+            XSSFWorkbook workbook,
+            CellStyle title,
+            CellStyle header,
+            CellStyle money,
+            String name,
+            DateRange range,
+            String[] headers,
+            List<Object[]> rows,
+            int valueColumn,
+            ChartTypes chartType,
+            String chartTitle) {
+        XSSFSheet sheet = workbook.createSheet(name);
+        Row titleRow = sheet.createRow(0);
+        Cell titleCell = titleRow.createCell(0);
+        titleCell.setCellValue(name.toUpperCase(Locale.ROOT));
+        titleCell.setCellStyle(title);
+        sheet.addMergedRegion(new CellRangeAddress(0, 0, 0, headers.length - 1));
+        Row rangeRow = sheet.createRow(1);
+        rangeRow.createCell(0).setCellValue(
+                "Desde " + range.desde() + " hasta " + range.hasta()
+        );
+        Row headerRow = sheet.createRow(3);
+        for (int column = 0; column < headers.length; column++) {
+            Cell cell = headerRow.createCell(column);
+            cell.setCellValue(headers[column]);
+            cell.setCellStyle(header);
+        }
+        int rowIndex = 4;
+        for (Object[] values : rows) {
+            Row row = sheet.createRow(rowIndex++);
+            for (int column = 0; column < values.length; column++) {
+                writeCell(row.createCell(column), values[column], money);
+            }
+        }
+        if (rows.isEmpty()) {
+            Row emptyRow = sheet.createRow(4);
+            emptyRow.createCell(0).setCellValue("Sin datos");
+            emptyRow.createCell(valueColumn).setCellValue(0);
+            rowIndex = 5;
+        }
+        addChart(
+                sheet,
+                chartType,
+                chartTitle,
+                4,
+                rowIndex - 1,
+                0,
+                valueColumn,
+                headers.length + 1
+        );
+        for (int column = 0; column < headers.length; column++) {
+            sheet.setColumnWidth(column, Math.max(16, headers[column].length() + 4) * 256);
+        }
+        sheet.createFreezePane(0, 4);
+        sheet.setAutoFilter(new CellRangeAddress(3, Math.max(3, rowIndex - 1), 0, headers.length - 1));
+    }
+
+    private void writeCell(Cell cell, Object value, CellStyle money) {
+        if (value == null) {
+            cell.setBlank();
+        } else if (value instanceof BigDecimal number) {
+            cell.setCellValue(number.doubleValue());
+            cell.setCellStyle(money);
+        } else if (value instanceof Number number) {
+            cell.setCellValue(number.doubleValue());
+        } else {
+            cell.setCellValue(value.toString());
+        }
+    }
+
+    private void addChart(
+            XSSFSheet sheet,
+            ChartTypes type,
+            String title,
+            int firstRow,
+            int lastRow,
+            int categoryColumn,
+            int valueColumn,
+            int anchorColumn) {
+        XSSFDrawing drawing = sheet.createDrawingPatriarch();
+        XSSFChart chart = drawing.createChart(
+                drawing.createAnchor(
+                        0, 0, 0, 0,
+                        anchorColumn, 3,
+                        anchorColumn + 9, 20
+                )
+        );
+        chart.setTitleText(title);
+        chart.setTitleOverlay(false);
+        XDDFDataSource<String> categories = XDDFDataSourcesFactory.fromStringCellRange(
+                sheet,
+                new CellRangeAddress(firstRow, lastRow, categoryColumn, categoryColumn)
+        );
+        XDDFNumericalDataSource<Double> values =
+                XDDFDataSourcesFactory.fromNumericCellRange(
+                        sheet,
+                        new CellRangeAddress(firstRow, lastRow, valueColumn, valueColumn)
+                );
+        if (type == ChartTypes.PIE) {
+            XDDFChartData data = chart.createData(ChartTypes.PIE, null, null);
+            data.addSeries(categories, values);
+            chart.plot(data);
+            return;
+        }
+        XDDFCategoryAxis categoryAxis = chart.createCategoryAxis(AxisPosition.BOTTOM);
+        XDDFValueAxis valueAxis = chart.createValueAxis(AxisPosition.LEFT);
+        valueAxis.setCrosses(AxisCrosses.AUTO_ZERO);
+        XDDFBarChartData data = (XDDFBarChartData) chart.createData(
+                ChartTypes.BAR,
+                categoryAxis,
+                valueAxis
+        );
+        data.setBarDirection(BarDirection.COL);
+        data.addSeries(categories, values);
+        chart.plot(data);
+    }
+
+    private ResponseEntity<byte[]> excelResponse(
+            XSSFWorkbook workbook,
+            String filename) throws IOException {
+        try (ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            workbook.write(output);
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType(XLSX_MIME))
+                    .header(
+                            HttpHeaders.CONTENT_DISPOSITION,
+                            "attachment; filename=\"" + filename + "\""
+                    )
+                    .body(output.toByteArray());
+        }
     }
 }

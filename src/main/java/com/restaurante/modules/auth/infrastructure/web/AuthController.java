@@ -6,21 +6,16 @@ import com.restaurante.modules.auth.infrastructure.web.dto.LoginRequest;
 import com.restaurante.modules.auth.infrastructure.web.dto.LoginResponse;
 import com.restaurante.shared.exception.BusinessException;
 import com.restaurante.shared.response.ApiResponse;
-import jakarta.servlet.http.Cookie;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-
-import java.time.Duration;
-import java.util.Arrays;
 
 @RestController
 @RequestMapping("/api/auth")
 public class AuthController {
+
+    private static final String REFRESH_TOKEN_HEADER = "X-Refresh-Token";
 
     private final AuthUseCase authUseCase;
     private final RefreshTokenUseCase refreshTokenUseCase;
@@ -32,23 +27,13 @@ public class AuthController {
 
     @PostMapping("/login")
     public ResponseEntity<ApiResponse<LoginResponse>> login(
-            @Valid @RequestBody LoginRequest request,
-            HttpServletResponse response) {
-
-        LoginResponse loginResponse = authUseCase.login(request);
-
-        writeRefreshTokenCookie(response, loginResponse.refreshToken(), Duration.ofDays(7));
-
-        LoginResponse safeResponse = new LoginResponse(
-                loginResponse.accessToken(), null,
-                loginResponse.rol(), loginResponse.nombre(), loginResponse.apellido()
-        );
-        return ResponseEntity.ok(ApiResponse.ok(safeResponse));
+            @Valid @RequestBody LoginRequest request) {
+        return ResponseEntity.ok(ApiResponse.ok(authUseCase.login(request)));
     }
 
     @PostMapping("/refresh")
-    public ResponseEntity<ApiResponse<String>> refresh(HttpServletRequest request) {
-        String refreshToken = extractRefreshCookie(request);
+    public ResponseEntity<ApiResponse<String>> refresh(
+            @RequestHeader(value = REFRESH_TOKEN_HEADER, required = false) String refreshToken) {
         if (refreshToken == null || refreshToken.isBlank()) {
             throw new BusinessException("Refresh token no enviado", HttpStatus.UNAUTHORIZED);
         }
@@ -57,44 +42,11 @@ public class AuthController {
     }
 
     @PostMapping("/logout")
-    public ResponseEntity<ApiResponse<Void>> logout(HttpServletRequest request,
-                                                     HttpServletResponse response) {
-        String refreshToken = extractRefreshCookie(request);
-        if (refreshToken != null) {
+    public ResponseEntity<ApiResponse<Void>> logout(
+            @RequestHeader(value = REFRESH_TOKEN_HEADER, required = false) String refreshToken) {
+        if (refreshToken != null && !refreshToken.isBlank()) {
             refreshTokenUseCase.logout(refreshToken);
         }
-        clearRefreshTokenCookie(response);
         return ResponseEntity.ok(ApiResponse.ok("Sesión cerrada", null));
-    }
-
-    private String extractRefreshCookie(HttpServletRequest request) {
-        if (request.getCookies() == null) return null;
-        return Arrays.stream(request.getCookies())
-                .filter(c -> "refreshToken".equals(c.getName()))
-                .map(Cookie::getValue)
-                .findFirst()
-                .orElse(null);
-    }
-
-    private void writeRefreshTokenCookie(HttpServletResponse response,
-                                         String refreshToken,
-                                         Duration maxAge) {
-        ResponseCookie cookie = ResponseCookie.from("refreshToken", refreshToken)
-                .httpOnly(true)
-                .path("/api/auth")
-                .sameSite("Lax")
-                .maxAge(maxAge)
-                .build();
-        response.addHeader("Set-Cookie", cookie.toString());
-    }
-
-    private void clearRefreshTokenCookie(HttpServletResponse response) {
-        ResponseCookie cookie = ResponseCookie.from("refreshToken", "")
-                .httpOnly(true)
-                .path("/api/auth")
-                .sameSite("Lax")
-                .maxAge(Duration.ZERO)
-                .build();
-        response.addHeader("Set-Cookie", cookie.toString());
     }
 }

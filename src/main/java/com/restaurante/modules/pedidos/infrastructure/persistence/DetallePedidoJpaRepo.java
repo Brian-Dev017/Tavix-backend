@@ -6,4 +6,5 @@ import java.util.List;
 
 public interface DetallePedidoJpaRepo extends JpaRepository<DetallePedidoEntity, Long> {
     List<DetallePedidoEntity> findByPedidoId(Long pedidoId);
+    boolean existsByProductoId(Long productoId);
 }

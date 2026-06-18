@@ -105,6 +105,13 @@ public class PedidoService {
         return saved.getId();
     }
 
+    @Transactional(readOnly = true)
+    public boolean mesaParaLlevarDisponible() {
+        return mesaRepo.findFirstByTipo(MesaEntity.TipoMesa.PARA_LLEVAR)
+                .map(mesa -> mesa.getEstado() == MesaEntity.EstadoMesa.DISPONIBLE)
+                .orElse(false);
+    }
+
     @Transactional
     public ItemPedidoDTO agregarItem(Long pedidoId, AgregarItemRequest request, Long usuarioId, boolean admin,
                                      boolean cajero, AuditoriaContexto contexto) {
