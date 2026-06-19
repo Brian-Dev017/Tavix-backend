@@ -3,6 +3,7 @@ package com.restaurante.modules.reportes.infrastructure.web;
 import com.restaurante.modules.caja.infrastructure.persistence.ComprobanteEntity;
 import com.restaurante.modules.caja.infrastructure.persistence.ComprobanteJpaRepo;
 import com.restaurante.modules.caja.infrastructure.persistence.DatosComprobanteJpaRepo;
+import com.restaurante.modules.caja.infrastructure.persistence.ArqueoJpaRepo;
 import com.restaurante.modules.catalogo.infrastructure.persistence.ProductoJpaRepo;
 import com.restaurante.modules.configuracion.infrastructure.persistence.NegocioConfigEntity;
 import com.restaurante.modules.configuracion.infrastructure.persistence.NegocioConfigJpaRepo;
@@ -54,7 +55,8 @@ class ReportesControllerTest {
                 detalleRepo,
                 mock(ProductoJpaRepo.class),
                 mock(DatosComprobanteJpaRepo.class),
-                negocioRepo
+                negocioRepo,
+                mock(ArqueoJpaRepo.class)
         );
 
         ReportesController.PedidoDetalleReporte detalle =

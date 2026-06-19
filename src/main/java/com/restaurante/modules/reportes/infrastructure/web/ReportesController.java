@@ -4,6 +4,8 @@ import com.restaurante.modules.caja.infrastructure.persistence.ComprobanteEntity
 import com.restaurante.modules.caja.infrastructure.persistence.ComprobanteJpaRepo;
 import com.restaurante.modules.caja.infrastructure.persistence.DatosComprobanteEntity;
 import com.restaurante.modules.caja.infrastructure.persistence.DatosComprobanteJpaRepo;
+import com.restaurante.modules.caja.infrastructure.persistence.ArqueoEntity;
+import com.restaurante.modules.caja.infrastructure.persistence.ArqueoJpaRepo;
 import com.restaurante.modules.catalogo.infrastructure.persistence.ProductoJpaRepo;
 import com.restaurante.modules.configuracion.infrastructure.persistence.NegocioConfigEntity;
 import com.restaurante.modules.configuracion.infrastructure.persistence.NegocioConfigJpaRepo;
@@ -13,6 +15,7 @@ import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoEntity;
 import com.restaurante.modules.pedidos.infrastructure.persistence.PedidoJpaRepo;
 import com.restaurante.shared.response.ApiResponse;
 import com.restaurante.shared.exception.BusinessException;
+import com.restaurante.modules.reportes.infrastructure.excel.ExcelReportBuilder;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.apache.poi.ss.usermodel.*;
@@ -41,6 +44,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @RestController
@@ -56,6 +60,7 @@ public class ReportesController {
     private final ProductoJpaRepo productoRepo;
     private final DatosComprobanteJpaRepo datosComprobanteRepo;
     private final NegocioConfigJpaRepo negocioConfigRepo;
+    private final ArqueoJpaRepo arqueoRepo;
 
     @PersistenceContext
     private EntityManager em;
@@ -65,13 +70,15 @@ public class ReportesController {
                                DetallePedidoJpaRepo detallePedidoRepo,
                                ProductoJpaRepo productoRepo,
                                DatosComprobanteJpaRepo datosComprobanteRepo,
-                               NegocioConfigJpaRepo negocioConfigRepo) {
+                               NegocioConfigJpaRepo negocioConfigRepo,
+                               ArqueoJpaRepo arqueoRepo) {
         this.comprobanteRepo = comprobanteRepo;
         this.pedidoRepo = pedidoRepo;
         this.detallePedidoRepo = detallePedidoRepo;
         this.productoRepo = productoRepo;
         this.datosComprobanteRepo = datosComprobanteRepo;
         this.negocioConfigRepo = negocioConfigRepo;
+        this.arqueoRepo = arqueoRepo;
     }
 
     // ──────────────── DTOs ────────────────
@@ -407,56 +414,74 @@ public class ReportesController {
                 dashboard(desde, hasta).getBody()
         ).data();
 
-        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
-            CellStyle title = titleStyle(workbook);
-            CellStyle header = headerStyle(workbook);
-            CellStyle money = moneyStyle(workbook);
-            createSummarySheet(
-                    workbook,
-                    title,
-                    header,
-                    money,
+        try (ExcelReportBuilder builder = new ExcelReportBuilder()) {
+            Map<String, Object> metadata = rangeMetadata(range);
+            builder.createSummarySheet(
+                    businessName(),
                     "REPORTE DE DASHBOARD",
-                    range,
-                    List.of(
-                            new Object[]{"Ventas", data.ventasHoy()},
-                            new Object[]{"Pedidos", data.pedidosHoy()}
+                    metadata,
+                    linkedMap(
+                            "Ventas", data.ventasHoy(),
+                            "Pedidos", data.pedidosHoy()
                     )
             );
-            createTableSheet(
-                    workbook, title, header, money, "Ventas por día", range,
-                    new String[]{"Fecha", "Comprobantes", "Total"},
+            builder.createTableSheet(
+                    "Ventas por día",
+                    "VENTAS POR DÍA",
+                    metadata,
+                    List.of(
+                            ExcelReportBuilder.column("Fecha", ExcelReportBuilder.ValueType.TEXT, 16),
+                            ExcelReportBuilder.column("Comprobantes", ExcelReportBuilder.ValueType.INTEGER, 16),
+                            ExcelReportBuilder.column("Total", ExcelReportBuilder.ValueType.MONEY, 18)
+                    ),
                     data.ventasPorDia().stream()
                             .map(row -> new Object[]{row.fecha(), row.cantidad(), row.total()})
                             .toList(),
-                    2, ChartTypes.BAR, "Ventas por día"
+                    chart(ChartTypes.BAR, "Ventas por día", "Total vendido (S/)", 0, 2)
             );
-            createTableSheet(
-                    workbook, title, header, money, "Métodos de pago", range,
-                    new String[]{"Método", "Transacciones", "Total"},
+            builder.createTableSheet(
+                    "Métodos de pago",
+                    "MÉTODOS DE PAGO",
+                    metadata,
+                    List.of(
+                            ExcelReportBuilder.column("Método", ExcelReportBuilder.ValueType.TEXT, 20),
+                            ExcelReportBuilder.column("Transacciones", ExcelReportBuilder.ValueType.INTEGER, 16),
+                            ExcelReportBuilder.column("Total", ExcelReportBuilder.ValueType.MONEY, 18)
+                    ),
                     data.ventasPorMetodo().stream()
                             .map(row -> new Object[]{row.metodo(), row.cantidad(), row.total()})
                             .toList(),
-                    2, ChartTypes.PIE, "Distribución de pagos"
+                    chart(ChartTypes.PIE, "Distribución de pagos", "Total por método", 0, 2)
             );
-            createTableSheet(
-                    workbook, title, header, money, "Categorías", range,
-                    new String[]{"Categoría", "Cantidad", "Total"},
+            builder.createTableSheet(
+                    "Categorías",
+                    "VENTAS POR CATEGORÍA",
+                    metadata,
+                    List.of(
+                            ExcelReportBuilder.column("Categoría", ExcelReportBuilder.ValueType.TEXT, 24),
+                            ExcelReportBuilder.column("Cantidad", ExcelReportBuilder.ValueType.INTEGER, 14),
+                            ExcelReportBuilder.column("Total", ExcelReportBuilder.ValueType.MONEY, 18)
+                    ),
                     data.ventasPorCategoria().stream()
                             .map(row -> new Object[]{row.categoria(), row.cantidad(), row.total()})
                             .toList(),
-                    2, ChartTypes.PIE, "Ventas por categoría"
+                    chart(ChartTypes.PIE, "Ventas por categoría", "Total por categoría", 0, 2)
             );
-            createTableSheet(
-                    workbook, title, header, money, "Platos", range,
-                    new String[]{"Producto", "Cantidad"},
+            builder.createTableSheet(
+                    "Platos",
+                    "PLATOS MÁS VENDIDOS",
+                    metadata,
+                    List.of(
+                            ExcelReportBuilder.column("Producto", ExcelReportBuilder.ValueType.TEXT, 32),
+                            ExcelReportBuilder.column("Cantidad", ExcelReportBuilder.ValueType.INTEGER, 14)
+                    ),
                     data.platosVendidos().stream()
                             .map(row -> new Object[]{row.nombre(), row.cantidad()})
                             .toList(),
-                    1, ChartTypes.BAR, "Platos más vendidos"
+                    chart(ChartTypes.BAR, "Platos más vendidos", "Unidades vendidas", 0, 1)
             );
             return excelResponse(
-                    workbook,
+                    builder.toBytes(),
                     "dashboard-" + range.desde() + "-" + range.hasta() + ".xlsx"
             );
         } catch (IOException error) {
@@ -476,46 +501,306 @@ public class ReportesController {
                 ventas(desde, hasta).getBody()
         ).data();
 
-        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
-            CellStyle title = titleStyle(workbook);
-            CellStyle header = headerStyle(workbook);
-            CellStyle money = moneyStyle(workbook);
-            createSummarySheet(
-                    workbook,
-                    title,
-                    header,
-                    money,
+        try (ExcelReportBuilder builder = new ExcelReportBuilder()) {
+            Map<String, Object> metadata = rangeMetadata(range);
+            builder.createSummarySheet(
+                    businessName(),
                     "REPORTE DE VENTAS",
-                    range,
-                    List.of(
-                            new Object[]{"Total de ventas", data.totalVentas()},
-                            new Object[]{"Comprobantes", data.cantidadComprobantes()},
-                            new Object[]{"Ticket promedio", data.promedioVenta()}
+                    metadata,
+                    linkedMap(
+                            "Total de ventas", data.totalVentas(),
+                            "Comprobantes", data.cantidadComprobantes(),
+                            "Ticket promedio", data.promedioVenta()
                     )
             );
-            createTableSheet(
-                    workbook, title, header, money, "Ventas por día", range,
-                    new String[]{"Fecha", "Comprobantes", "Total"},
+            builder.createTableSheet(
+                    "Ventas por día",
+                    "VENTAS POR DÍA",
+                    metadata,
+                    List.of(
+                            ExcelReportBuilder.column("Fecha", ExcelReportBuilder.ValueType.TEXT, 16),
+                            ExcelReportBuilder.column("Comprobantes", ExcelReportBuilder.ValueType.INTEGER, 16),
+                            ExcelReportBuilder.column("Total", ExcelReportBuilder.ValueType.MONEY, 18)
+                    ),
                     data.ventasPorDia().stream()
                             .map(row -> new Object[]{row.fecha(), row.cantidad(), row.total()})
                             .toList(),
-                    2, ChartTypes.BAR, "Ventas por día"
+                    chart(ChartTypes.BAR, "Ventas por día", "Total vendido (S/)", 0, 2)
             );
-            createTableSheet(
-                    workbook, title, header, money, "Métodos de pago", range,
-                    new String[]{"Método", "Transacciones", "Total"},
+            builder.createTableSheet(
+                    "Métodos de pago",
+                    "MÉTODOS DE PAGO",
+                    metadata,
+                    List.of(
+                            ExcelReportBuilder.column("Método", ExcelReportBuilder.ValueType.TEXT, 20),
+                            ExcelReportBuilder.column("Transacciones", ExcelReportBuilder.ValueType.INTEGER, 16),
+                            ExcelReportBuilder.column("Total", ExcelReportBuilder.ValueType.MONEY, 18)
+                    ),
                     data.ventasPorMetodo().stream()
                             .map(row -> new Object[]{row.metodo(), row.cantidad(), row.total()})
                             .toList(),
-                    2, ChartTypes.PIE, "Distribución de pagos"
+                    chart(ChartTypes.PIE, "Distribución de pagos", "Total por método", 0, 2)
             );
             return excelResponse(
-                    workbook,
+                    builder.toBytes(),
                     "ventas-" + range.desde() + "-" + range.hasta() + ".xlsx"
             );
         } catch (IOException error) {
             throw new BusinessException(
                     "No se pudo generar el Excel de ventas",
+                    HttpStatus.INTERNAL_SERVER_ERROR
+            );
+        }
+    }
+
+    @GetMapping("/pagos/excel")
+    public ResponseEntity<byte[]> exportarPagosExcel(
+            @RequestParam String desde,
+            @RequestParam String hasta) {
+        DateRange range = parseDateRange(desde, hasta);
+        ReporteVentasResponse data = Objects.requireNonNull(
+                ventas(desde, hasta).getBody()).data();
+        BigDecimal total = data.ventasPorMetodo().stream()
+                .map(VentaPorMetodo::total)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        long transacciones = data.ventasPorMetodo().stream()
+                .mapToLong(VentaPorMetodo::cantidad)
+                .sum();
+        String principal = data.ventasPorMetodo().stream()
+                .max(Comparator.comparing(VentaPorMetodo::total))
+                .map(VentaPorMetodo::metodo)
+                .orElse("Sin datos");
+
+        try (ExcelReportBuilder builder = new ExcelReportBuilder()) {
+            Map<String, Object> metadata = rangeMetadata(range);
+            builder.createSummarySheet(
+                    businessName(),
+                    "REPORTE DE PAGOS",
+                    metadata,
+                    linkedMap(
+                            "Venta total", total,
+                            "Transacciones", transacciones,
+                            "Método con mayor importe", principal
+                    )
+            );
+            builder.createTableSheet(
+                    "Métodos de pago",
+                    "MÉTODOS DE PAGO",
+                    metadata,
+                    List.of(
+                            ExcelReportBuilder.column("Método", ExcelReportBuilder.ValueType.TEXT, 20),
+                            ExcelReportBuilder.column("Transacciones", ExcelReportBuilder.ValueType.INTEGER, 16),
+                            ExcelReportBuilder.column("Total", ExcelReportBuilder.ValueType.MONEY, 18),
+                            ExcelReportBuilder.column("Participación", ExcelReportBuilder.ValueType.PERCENT, 16)
+                    ),
+                    data.ventasPorMetodo().stream()
+                            .map(row -> new Object[]{
+                                    row.metodo(),
+                                    row.cantidad(),
+                                    row.total(),
+                                    total.signum() == 0
+                                            ? 0d
+                                            : row.total().divide(total, 6, RoundingMode.HALF_UP).doubleValue()
+                            })
+                            .toList(),
+                    chart(ChartTypes.PIE, "Distribución de pagos", "Total por método", 0, 2)
+            );
+            return excelResponse(
+                    builder.toBytes(),
+                    "pagos-" + range.desde() + "-" + range.hasta() + ".xlsx"
+            );
+        } catch (IOException error) {
+            throw new BusinessException(
+                    "No se pudo generar el Excel de pagos",
+                    HttpStatus.INTERNAL_SERVER_ERROR
+            );
+        }
+    }
+
+    @GetMapping("/arqueos/excel")
+    public ResponseEntity<byte[]> exportarArqueosExcel() {
+        List<ArqueoEntity> arqueos = arqueoRepo.findAll().stream()
+                .sorted(Comparator.comparing(
+                        ArqueoEntity::getAperturaEn,
+                        Comparator.nullsLast(Comparator.naturalOrder())
+                ).reversed())
+                .toList();
+        long abiertos = countArqueos(arqueos, ArqueoEntity.EstadoArqueo.ABIERTO);
+        long precierres = countArqueos(arqueos, ArqueoEntity.EstadoArqueo.PRECIERRE);
+        long cerrados = countArqueos(arqueos, ArqueoEntity.EstadoArqueo.CERRADO);
+        BigDecimal totalVentas = sumArqueos(arqueos, ArqueoEntity::getTotalVentas);
+        BigDecimal diferencia = sumArqueos(arqueos, ArqueoEntity::getDiferencia);
+        Map<String, Object> metadata = generatedMetadata();
+
+        try (ExcelReportBuilder builder = new ExcelReportBuilder()) {
+            builder.createSummarySheet(
+                    businessName(),
+                    "REPORTE DE ARQUEOS",
+                    metadata,
+                    linkedMap(
+                            "Cantidad total", arqueos.size(),
+                            "Abiertos", abiertos,
+                            "Pre-cierres", precierres,
+                            "Cerrados", cerrados,
+                            "Total de ventas", totalVentas,
+                            "Diferencia acumulada", diferencia
+                    )
+            );
+            builder.createTableSheet(
+                    "Arqueos",
+                    "DETALLE DE ARQUEOS",
+                    metadata,
+                    List.of(
+                            ExcelReportBuilder.column("ID", ExcelReportBuilder.ValueType.INTEGER, 10),
+                            ExcelReportBuilder.column("Cajero", ExcelReportBuilder.ValueType.TEXT, 28),
+                            ExcelReportBuilder.column("Apertura", ExcelReportBuilder.ValueType.DATE_TIME, 20),
+                            ExcelReportBuilder.column("Cierre", ExcelReportBuilder.ValueType.DATE_TIME, 20),
+                            ExcelReportBuilder.column("Monto apertura", ExcelReportBuilder.ValueType.MONEY, 18),
+                            ExcelReportBuilder.column("Monto cierre", ExcelReportBuilder.ValueType.MONEY, 18),
+                            ExcelReportBuilder.column("Total ventas", ExcelReportBuilder.ValueType.MONEY, 18),
+                            ExcelReportBuilder.column("Efectivo", ExcelReportBuilder.ValueType.MONEY, 18),
+                            ExcelReportBuilder.column("Digital", ExcelReportBuilder.ValueType.MONEY, 18),
+                            ExcelReportBuilder.column("Redondeo", ExcelReportBuilder.ValueType.MONEY, 16),
+                            ExcelReportBuilder.column("Esperado", ExcelReportBuilder.ValueType.MONEY, 18),
+                            ExcelReportBuilder.column("Diferencia", ExcelReportBuilder.ValueType.MONEY, 18),
+                            ExcelReportBuilder.column("Estado", ExcelReportBuilder.ValueType.TEXT, 15),
+                            ExcelReportBuilder.column("Notas", ExcelReportBuilder.ValueType.TEXT, 32)
+                    ),
+                    arqueos.stream().map(item -> new Object[]{
+                            item.getId(),
+                            item.getNombreCajero(),
+                            item.getAperturaEn(),
+                            item.getCierreEn(),
+                            item.getMontoApertura(),
+                            item.getMontoCierre(),
+                            item.getTotalVentas(),
+                            item.getTotalEfectivo(),
+                            item.getTotalDigital(),
+                            item.getTotalRedondeo(),
+                            item.getMontoEsperado(),
+                            item.getDiferencia(),
+                            item.getEstado() == null ? null : item.getEstado().name(),
+                            item.getNotas()
+                    }).toList(),
+                    chart(ChartTypes.BAR, "Ventas por cajero", "Total de ventas (S/)", 1, 6)
+            );
+            builder.createTableSheet(
+                    "Estados",
+                    "ARQUEOS POR ESTADO",
+                    metadata,
+                    List.of(
+                            ExcelReportBuilder.column("Estado", ExcelReportBuilder.ValueType.TEXT, 20),
+                            ExcelReportBuilder.column("Cantidad", ExcelReportBuilder.ValueType.INTEGER, 16)
+                    ),
+                    List.of(
+                            new Object[]{"ABIERTO", abiertos},
+                            new Object[]{"PRECIERRE", precierres},
+                            new Object[]{"CERRADO", cerrados}
+                    ),
+                    chart(ChartTypes.PIE, "Distribución por estado", "Cantidad de arqueos", 0, 1)
+            );
+            return excelResponse(
+                    builder.toBytes(),
+                    "arqueos-" + LocalDate.now() + ".xlsx"
+            );
+        } catch (IOException error) {
+            throw new BusinessException(
+                    "No se pudo generar el Excel de arqueos",
+                    HttpStatus.INTERNAL_SERVER_ERROR
+            );
+        }
+    }
+
+    @GetMapping("/historial/excel")
+    public ResponseEntity<byte[]> exportarHistorialExcel(
+            @RequestParam(required = false) String estado) {
+        ComprobanteEntity.EstadoComprobante filtro = parseEstado(estado);
+        List<ComprobanteEntity> comprobantes = comprobanteRepo.findAll().stream()
+                .filter(item -> filtro == null || item.getEstado() == filtro)
+                .sorted(Comparator.comparing(
+                        ComprobanteEntity::getCreadoEn,
+                        Comparator.nullsLast(Comparator.naturalOrder())
+                ).reversed())
+                .toList();
+
+        BigDecimal total = comprobantes.stream()
+                .map(ComprobanteEntity::getTotal)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        long completados = countComprobantes(comprobantes, ComprobanteEntity.EstadoComprobante.COMPLETADO);
+        long anulados = countComprobantes(comprobantes, ComprobanteEntity.EstadoComprobante.ANULADO);
+        long pendientes = countComprobantes(comprobantes, ComprobanteEntity.EstadoComprobante.PENDIENTE);
+        Map<String, Object> metadata = generatedMetadata();
+        metadata.put("Filtro", filtro == null ? "TODOS" : filtro.name());
+
+        Map<String, Aggregate> byMethod = aggregate(
+                comprobantes,
+                item -> item.getMetodoPago() == null ? "SIN MÉTODO" : item.getMetodoPago().name());
+        Map<String, Aggregate> byState = aggregate(
+                comprobantes,
+                item -> item.getEstado() == null ? "SIN ESTADO" : item.getEstado().name());
+        Map<String, Aggregate> byType = aggregate(
+                comprobantes,
+                item -> nombreTipoComprobante(item.getTipoComprobanteId()));
+
+        try (ExcelReportBuilder builder = new ExcelReportBuilder()) {
+            builder.createSummarySheet(
+                    businessName(),
+                    "HISTORIAL DE COMPROBANTES",
+                    metadata,
+                    linkedMap(
+                            "Cantidad de comprobantes", comprobantes.size(),
+                            "Total monetario", total,
+                            "Completados", completados,
+                            "Anulados", anulados,
+                            "Pendientes", pendientes
+                    )
+            );
+            builder.createTableSheet(
+                    "Comprobantes",
+                    "DETALLE DE COMPROBANTES",
+                    metadata,
+                    List.of(
+                            ExcelReportBuilder.column("ID", ExcelReportBuilder.ValueType.INTEGER, 10),
+                            ExcelReportBuilder.column("Pedido", ExcelReportBuilder.ValueType.INTEGER, 12),
+                            ExcelReportBuilder.column("Tipo", ExcelReportBuilder.ValueType.TEXT, 16),
+                            ExcelReportBuilder.column("Serie", ExcelReportBuilder.ValueType.TEXT, 12),
+                            ExcelReportBuilder.column("Número", ExcelReportBuilder.ValueType.INTEGER, 12),
+                            ExcelReportBuilder.column("Método", ExcelReportBuilder.ValueType.TEXT, 18),
+                            ExcelReportBuilder.column("Total", ExcelReportBuilder.ValueType.MONEY, 18),
+                            ExcelReportBuilder.column("Estado", ExcelReportBuilder.ValueType.TEXT, 16),
+                            ExcelReportBuilder.column("Pagado", ExcelReportBuilder.ValueType.DATE_TIME, 20),
+                            ExcelReportBuilder.column("Creado", ExcelReportBuilder.ValueType.DATE_TIME, 20)
+                    ),
+                    comprobantes.stream().map(item -> new Object[]{
+                            item.getId(),
+                            item.getPedidoId(),
+                            nombreTipoComprobante(item.getTipoComprobanteId()),
+                            item.getSerie(),
+                            item.getNumero(),
+                            item.getMetodoPago() == null ? null : item.getMetodoPago().name(),
+                            item.getTotal(),
+                            item.getEstado() == null ? null : item.getEstado().name(),
+                            item.getPagadoEn(),
+                            item.getCreadoEn()
+                    }).toList(),
+                    null
+            );
+            addAggregateSheet(builder, "Métodos de pago", "MÉTODOS DE PAGO",
+                    metadata, byMethod, ChartTypes.PIE, "Comprobantes por método");
+            addAggregateSheet(builder, "Estados", "COMPROBANTES POR ESTADO",
+                    metadata, byState, ChartTypes.PIE, "Comprobantes por estado");
+            addAggregateSheet(builder, "Tipos", "COMPROBANTES POR TIPO",
+                    metadata, byType, ChartTypes.BAR, "Comprobantes por tipo");
+            String suffix = filtro == null ? "todos" : filtro.name().toLowerCase(Locale.ROOT);
+            return excelResponse(
+                    builder.toBytes(),
+                    "historial-comprobantes-" + suffix + "-" + LocalDate.now() + ".xlsx"
+            );
+        } catch (IOException error) {
+            throw new BusinessException(
+                    "No se pudo generar el Excel del historial",
                     HttpStatus.INTERNAL_SERVER_ERROR
             );
         }
@@ -553,202 +838,142 @@ public class ReportesController {
         }
     }
 
-    private CellStyle titleStyle(Workbook workbook) {
-        CellStyle style = workbook.createCellStyle();
-        Font font = workbook.createFont();
-        font.setBold(true);
-        font.setColor(IndexedColors.WHITE.getIndex());
-        font.setFontHeightInPoints((short) 14);
-        style.setFont(font);
-        style.setFillForegroundColor(IndexedColors.ROSE.getIndex());
-        style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
-        style.setAlignment(HorizontalAlignment.CENTER);
-        return style;
+    private Map<String, Object> rangeMetadata(DateRange range) {
+        Map<String, Object> metadata = generatedMetadata();
+        Map<String, Object> ordered = new LinkedHashMap<>();
+        ordered.put("Desde", range.desde().toString());
+        ordered.put("Hasta", range.hasta().toString());
+        ordered.putAll(metadata);
+        return ordered;
     }
 
-    private CellStyle headerStyle(Workbook workbook) {
-        CellStyle style = workbook.createCellStyle();
-        Font font = workbook.createFont();
-        font.setBold(true);
-        font.setColor(IndexedColors.WHITE.getIndex());
-        style.setFont(font);
-        style.setFillForegroundColor(IndexedColors.DARK_BLUE.getIndex());
-        style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
-        style.setAlignment(HorizontalAlignment.CENTER);
-        return style;
+    private Map<String, Object> generatedMetadata() {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("Generado", LocalDateTime.now().format(
+                DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")));
+        metadata.put("Moneda", "Soles (PEN)");
+        return metadata;
     }
 
-    private CellStyle moneyStyle(Workbook workbook) {
-        CellStyle style = workbook.createCellStyle();
-        style.setDataFormat(workbook.createDataFormat().getFormat("S/ #,##0.00"));
-        return style;
+    private String businessName() {
+        return negocioConfigRepo.findById(1L)
+                .map(NegocioConfigEntity::getNombreComercial)
+                .filter(value -> !value.isBlank())
+                .orElse("LA FLOR DEL TUMBO");
     }
 
-    private void createSummarySheet(
-            XSSFWorkbook workbook,
-            CellStyle title,
-            CellStyle header,
-            CellStyle money,
-            String reportTitle,
-            DateRange range,
-            List<Object[]> values) {
-        XSSFSheet sheet = workbook.createSheet("Resumen");
-        Row titleRow = sheet.createRow(0);
-        Cell titleCell = titleRow.createCell(0);
-        titleCell.setCellValue(reportTitle);
-        titleCell.setCellStyle(title);
-        sheet.addMergedRegion(new CellRangeAddress(0, 0, 0, 2));
-        Row rangeRow = sheet.createRow(1);
-        rangeRow.createCell(0).setCellValue("Desde");
-        rangeRow.createCell(1).setCellValue(range.desde().toString());
-        rangeRow.createCell(2).setCellValue("Hasta: " + range.hasta());
-        Row headers = sheet.createRow(3);
-        headers.createCell(0).setCellValue("Indicador");
-        headers.createCell(1).setCellValue("Valor");
-        headers.getCell(0).setCellStyle(header);
-        headers.getCell(1).setCellStyle(header);
-        int rowIndex = 4;
-        for (Object[] value : values) {
-            Row row = sheet.createRow(rowIndex++);
-            writeCell(row.createCell(0), value[0], money);
-            writeCell(row.createCell(1), value[1], money);
-        }
-        sheet.setColumnWidth(0, 28 * 256);
-        sheet.setColumnWidth(1, 20 * 256);
-        sheet.setColumnWidth(2, 20 * 256);
-        sheet.createFreezePane(0, 4);
-    }
-
-    private void createTableSheet(
-            XSSFWorkbook workbook,
-            CellStyle title,
-            CellStyle header,
-            CellStyle money,
-            String name,
-            DateRange range,
-            String[] headers,
-            List<Object[]> rows,
-            int valueColumn,
-            ChartTypes chartType,
-            String chartTitle) {
-        XSSFSheet sheet = workbook.createSheet(name);
-        Row titleRow = sheet.createRow(0);
-        Cell titleCell = titleRow.createCell(0);
-        titleCell.setCellValue(name.toUpperCase(Locale.ROOT));
-        titleCell.setCellStyle(title);
-        sheet.addMergedRegion(new CellRangeAddress(0, 0, 0, headers.length - 1));
-        Row rangeRow = sheet.createRow(1);
-        rangeRow.createCell(0).setCellValue(
-                "Desde " + range.desde() + " hasta " + range.hasta()
-        );
-        Row headerRow = sheet.createRow(3);
-        for (int column = 0; column < headers.length; column++) {
-            Cell cell = headerRow.createCell(column);
-            cell.setCellValue(headers[column]);
-            cell.setCellStyle(header);
-        }
-        int rowIndex = 4;
-        for (Object[] values : rows) {
-            Row row = sheet.createRow(rowIndex++);
-            for (int column = 0; column < values.length; column++) {
-                writeCell(row.createCell(column), values[column], money);
-            }
-        }
-        if (rows.isEmpty()) {
-            Row emptyRow = sheet.createRow(4);
-            emptyRow.createCell(0).setCellValue("Sin datos");
-            emptyRow.createCell(valueColumn).setCellValue(0);
-            rowIndex = 5;
-        }
-        addChart(
-                sheet,
-                chartType,
-                chartTitle,
-                4,
-                rowIndex - 1,
-                0,
-                valueColumn,
-                headers.length + 1
-        );
-        for (int column = 0; column < headers.length; column++) {
-            sheet.setColumnWidth(column, Math.max(16, headers[column].length() + 4) * 256);
-        }
-        sheet.createFreezePane(0, 4);
-        sheet.setAutoFilter(new CellRangeAddress(3, Math.max(3, rowIndex - 1), 0, headers.length - 1));
-    }
-
-    private void writeCell(Cell cell, Object value, CellStyle money) {
-        if (value == null) {
-            cell.setBlank();
-        } else if (value instanceof BigDecimal number) {
-            cell.setCellValue(number.doubleValue());
-            cell.setCellStyle(money);
-        } else if (value instanceof Number number) {
-            cell.setCellValue(number.doubleValue());
-        } else {
-            cell.setCellValue(value.toString());
-        }
-    }
-
-    private void addChart(
-            XSSFSheet sheet,
+    private ExcelReportBuilder.ChartSpec chart(
             ChartTypes type,
             String title,
-            int firstRow,
-            int lastRow,
+            String series,
             int categoryColumn,
-            int valueColumn,
-            int anchorColumn) {
-        XSSFDrawing drawing = sheet.createDrawingPatriarch();
-        XSSFChart chart = drawing.createChart(
-                drawing.createAnchor(
-                        0, 0, 0, 0,
-                        anchorColumn, 3,
-                        anchorColumn + 9, 20
-                )
-        );
-        chart.setTitleText(title);
-        chart.setTitleOverlay(false);
-        XDDFDataSource<String> categories = XDDFDataSourcesFactory.fromStringCellRange(
-                sheet,
-                new CellRangeAddress(firstRow, lastRow, categoryColumn, categoryColumn)
-        );
-        XDDFNumericalDataSource<Double> values =
-                XDDFDataSourcesFactory.fromNumericCellRange(
-                        sheet,
-                        new CellRangeAddress(firstRow, lastRow, valueColumn, valueColumn)
-                );
-        if (type == ChartTypes.PIE) {
-            XDDFChartData data = chart.createData(ChartTypes.PIE, null, null);
-            data.addSeries(categories, values);
-            chart.plot(data);
-            return;
-        }
-        XDDFCategoryAxis categoryAxis = chart.createCategoryAxis(AxisPosition.BOTTOM);
-        XDDFValueAxis valueAxis = chart.createValueAxis(AxisPosition.LEFT);
-        valueAxis.setCrosses(AxisCrosses.AUTO_ZERO);
-        XDDFBarChartData data = (XDDFBarChartData) chart.createData(
-                ChartTypes.BAR,
-                categoryAxis,
-                valueAxis
-        );
-        data.setBarDirection(BarDirection.COL);
-        data.addSeries(categories, values);
-        chart.plot(data);
+            int valueColumn
+    ) {
+        return new ExcelReportBuilder.ChartSpec(
+                type, title, series, categoryColumn, valueColumn);
     }
 
-    private ResponseEntity<byte[]> excelResponse(
-            XSSFWorkbook workbook,
-            String filename) throws IOException {
-        try (ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            workbook.write(output);
-            return ResponseEntity.ok()
-                    .contentType(MediaType.parseMediaType(XLSX_MIME))
-                    .header(
-                            HttpHeaders.CONTENT_DISPOSITION,
-                            "attachment; filename=\"" + filename + "\""
-                    )
-                    .body(output.toByteArray());
+    private Map<String, Object> linkedMap(Object... values) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (int index = 0; index < values.length; index += 2) {
+            result.put(values[index].toString(), values[index + 1]);
+        }
+        return result;
+    }
+
+    private long countArqueos(
+            List<ArqueoEntity> arqueos,
+            ArqueoEntity.EstadoArqueo estado
+    ) {
+        return arqueos.stream().filter(item -> item.getEstado() == estado).count();
+    }
+
+    private BigDecimal sumArqueos(
+            List<ArqueoEntity> arqueos,
+            Function<ArqueoEntity, BigDecimal> getter
+    ) {
+        return arqueos.stream()
+                .map(getter)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private ComprobanteEntity.EstadoComprobante parseEstado(String estado) {
+        if (estado == null || estado.isBlank()) return null;
+        try {
+            return ComprobanteEntity.EstadoComprobante.valueOf(
+                    estado.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException error) {
+            throw new BusinessException(
+                    "El estado de comprobante no es válido",
+                    HttpStatus.BAD_REQUEST
+            );
         }
     }
+
+    private long countComprobantes(
+            List<ComprobanteEntity> comprobantes,
+            ComprobanteEntity.EstadoComprobante estado
+    ) {
+        return comprobantes.stream().filter(item -> item.getEstado() == estado).count();
+    }
+
+    private Map<String, Aggregate> aggregate(
+            List<ComprobanteEntity> comprobantes,
+            Function<ComprobanteEntity, String> classifier
+    ) {
+        Map<String, Aggregate> result = new LinkedHashMap<>();
+        for (ComprobanteEntity item : comprobantes) {
+            String key = classifier.apply(item);
+            Aggregate current = result.getOrDefault(
+                    key, new Aggregate(0, BigDecimal.ZERO));
+            result.put(key, new Aggregate(
+                    current.count() + 1,
+                    current.total().add(
+                            item.getTotal() == null ? BigDecimal.ZERO : item.getTotal())
+            ));
+        }
+        return result;
+    }
+
+    private void addAggregateSheet(
+            ExcelReportBuilder builder,
+            String sheetName,
+            String title,
+            Map<String, Object> metadata,
+            Map<String, Aggregate> aggregates,
+            ChartTypes chartType,
+            String chartTitle
+    ) {
+        builder.createTableSheet(
+                sheetName,
+                title,
+                metadata,
+                List.of(
+                        ExcelReportBuilder.column("Categoría", ExcelReportBuilder.ValueType.TEXT, 22),
+                        ExcelReportBuilder.column("Cantidad", ExcelReportBuilder.ValueType.INTEGER, 16),
+                        ExcelReportBuilder.column("Total", ExcelReportBuilder.ValueType.MONEY, 18)
+                ),
+                aggregates.entrySet().stream()
+                        .map(entry -> new Object[]{
+                                entry.getKey(),
+                                entry.getValue().count(),
+                                entry.getValue().total()
+                        })
+                        .toList(),
+                chart(chartType, chartTitle, "Cantidad de comprobantes", 0, 1)
+        );
+    }
+
+    private ResponseEntity<byte[]> excelResponse(byte[] bytes, String filename) {
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(XLSX_MIME))
+                .header(
+                        HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"" + filename + "\""
+                )
+                .body(bytes);
+    }
+
+    private record Aggregate(long count, BigDecimal total) {}
 }
