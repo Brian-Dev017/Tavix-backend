@@ -127,6 +127,7 @@ public class ReportesController {
             String negocioRuc,
             String negocioDireccion,
             String negocioLogoUrl,
+            BigDecimal negocioIgvPorcentaje,
             List<ItemDetalleReporte> items
     ) {}
 
@@ -384,6 +385,7 @@ public class ReportesController {
                 negocio != null ? negocio.getRucNegocio() : null,
                 negocio != null ? negocio.getDireccion() : null,
                 negocio != null ? negocio.getLogoUrl() : null,
+                negocio != null ? negocio.getIgvPorcentaje() : null,
                 items
         )));
     }
